@@ -9,6 +9,7 @@ source of truth and a validated type.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,6 +25,34 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    # --- Deployment mode ---
+    #
+    # This codebase now serves two deployments: the single-user self-hosted
+    # box (Moomoo, SQLite, one owner) and the Informed Trader cloud offering
+    # (Twelve Data, Postgres tenancy, many users).
+    #
+    # It defaults to self_hosted so that a box with no DEPLOYMENT_MODE line in
+    # its .env behaves in every respect exactly as it did before this setting
+    # existed. Every cloud-only field below is declared but unread under
+    # self_hosted, so an absent value is never an error here.
+    deployment_mode: Literal["self_hosted", "cloud"] = "self_hosted"
+
+    # --- Cloud-only ---------------------------------------------------------
+    # Read only when deployment_mode == "cloud". They are declared in core/ so
+    # that there is ONE settings object rather than two that can drift, but
+    # nothing in core/ consumes them.
+    #
+    # Empty strings rather than None: an unset credential must fail as
+    # "not configured" at the point of use, not as an AttributeError at import.
+    cloud_database_url: str = ""
+    twelve_data_api_key: str = ""
+    # Twelve Data's free tier allows 800 API credits per day. This is the
+    # actual ceiling, not headroom: at roughly two credits per ticker-scan
+    # across four session scans a day it is about 100 distinct tickers for the
+    # whole platform, shared across every user, which is why the cloud provider
+    # caches by ticker rather than by user.
+    twelve_data_daily_credits: int = 800
 
     # --- Moomoo / OpenD ---
     opend_host: str = "127.0.0.1"
