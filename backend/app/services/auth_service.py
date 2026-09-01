@@ -132,7 +132,21 @@ def verify_password(plain: str) -> bool:
     log, rather than a 500 that tells an anonymous caller the server is
     misconfigured.
     """
-    stored = settings.auth_password_hash
+    return verify_password_against(plain, settings.auth_password_hash)
+
+
+def verify_password_against(plain: str, stored: str) -> bool:
+    """Verify `plain` against a specific stored scrypt string.
+
+    Split out from `verify_password` on 2026-09-01 so the cloud deployment,
+    which holds one hash PER USER in Postgres rather than one in .env, uses
+    exactly this comparison rather than reimplementing it. Two independent
+    implementations of a password check is the kind of duplication that goes
+    wrong quietly and expensively (decisions #63).
+
+    `verify_password` is unchanged in behaviour and simply passes the
+    single-tenant hash from settings.
+    """
     if not stored:
         return False
     try:
@@ -141,7 +155,7 @@ def verify_password(plain: str) -> bool:
             raise ValueError(f"unsupported scheme {scheme!r}")
         candidate = _derive(plain, _b64d(salt), int(n), int(r), int(p))
     except Exception:                                            # noqa: BLE001
-        logger.error("AUTH_PASSWORD_HASH is not a valid scrypt hash — "
+        logger.error("stored password hash is not a valid scrypt string — "
                      "regenerate it with scripts/set_password.py")
         return False
     return hmac.compare_digest(candidate, _b64d(digest))
