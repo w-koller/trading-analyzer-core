@@ -36,12 +36,12 @@ from app.services.sdk_gateway import SdkContextGateway, records
 logger = logging.getLogger(__name__)
 
 
-class GatewayError(RuntimeError):
-    """Any failure talking to OpenD."""
-
-
-class GatewayTimeout(GatewayError):
-    """A call exceeded its timeout — OpenD is wedged or unreachable."""
+# Defined in gateway_errors so that market_data.py and everything downstream
+# of it can be imported without the moomoo SDK. Re-exported here because
+# this is where callers have always found them.
+from app.services.gateway_errors import (  # noqa: F401
+    GatewayError, GatewayTimeout,
+)
 
 
 @dataclass

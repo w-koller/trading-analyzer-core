@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app import db
-from app.services.sdk_gateway import RateLimiter
+from app.utils.rate_limiter import RateLimiter
 from app.utils.market_hours import market_of
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ SUPPORTED_MARKETS = ("US", "HK", "AU")
 _RATE_LIMIT_CALLS = 8
 _RATE_LIMIT_WINDOW = 30.0
 
-# The limiter itself moved to `sdk_gateway` when the sector work needed a
+# The limiter itself moved to `app.utils.rate_limiter` when the sector work needed a
 # third and fourth copy of it (decisions #63). The alias keeps this module's
 # own call sites and its tests reading the same as before.
 _RateLimiter = RateLimiter

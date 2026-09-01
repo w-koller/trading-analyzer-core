@@ -25,7 +25,7 @@ from app import db
 from app.services import (
     ai_thesis, llm_json, llm_slots, news_service, ollama_models, prompt_blocks,
 )
-from app.services.moomoo_gateway import GatewayError
+from app.services.gateway_errors import GatewayError
 
 logger = logging.getLogger(__name__)
 

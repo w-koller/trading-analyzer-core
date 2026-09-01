@@ -24,7 +24,7 @@ from typing import Any
 import pandas as pd
 
 from app.services import indicators
-from app.services.moomoo_gateway import GatewayError
+from app.services.gateway_errors import GatewayError
 from app.utils import market_hours
 
 logger = logging.getLogger(__name__)
