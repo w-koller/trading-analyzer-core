@@ -1,6 +1,6 @@
 #!/usr/sbin/nft -f
 #
-# Restrict the Ollama API to the trading LXC.
+# Restrict the Ollama API to the two app LXCs.
 #
 # RUNS ON THE OLLAMA LXC (192.168.68.49), not on the trading box. Nothing in
 # this repo installs it — see deploy/README-ollama.md.
@@ -41,8 +41,15 @@ table inet ollama_fw {
 		ct state established,related accept
 		iif lo accept
 
-		# The trading LXC. The ONLY host with any business here.
-		ip saddr 192.168.68.107 tcp dport 11434 accept
+		# The two app LXCs, and nothing else.
+		#
+		# .85 was added 2026-09-01. The Informed Trader handover stated this
+		# had already been done; measured from .85 the connection TIMED OUT
+		# after 15s while the same request from .107 returned 200 — packets
+		# dropped, i.e. this rule, not a daemon fault. That refused-vs-timeout
+		# distinction is the whole diagnosis and takes one second to make.
+		ip saddr 192.168.68.107 tcp dport 11434 accept   # trading-analyzer
+		ip saddr 192.168.68.85  tcp dport 11434 accept   # informed-trader-cloud
 
 		tcp dport 11434 drop
 	}
