@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up trading.db (SQLite online backup, WAL-safe)
+
+[Service]
+Type=oneshot
+User=trading
+ExecStart=/opt/trading-analyzer/core/backend/.venv/bin/python \
+    /opt/trading-analyzer/core/deploy/backup/backup_db.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/trading-analyzer/core/backend/data

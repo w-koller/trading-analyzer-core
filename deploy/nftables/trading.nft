@@ -1,0 +1,51 @@
+#!/usr/sbin/nft -f
+#
+# Restrict the Next.js port to the reverse proxy.
+#
+# The dashboard is public, and the only thing that should ever open :3000 is
+# NGINX Proxy Manager. Before this, any host on the LAN could reach it
+# directly over plain http, which caused two distinct problems:
+#
+#   1. A session cookie is marked Secure, so a browser on http://<lan-ip>:3000
+#      silently discards it. Login appears to succeed and then bounces —
+#      reported as "correct credentials are rejected", and it is not obvious.
+#   2. Worse: the backend trusts X-Forwarded-For from 127.0.0.1, and the Next
+#      proxy passes the incoming header through. So a LAN client could send
+#      its own X-Forwarded-For and mint a fresh per-IP login-lockout bucket on
+#      every request, defeating the brute-force limit and poisoning the audit
+#      trail. Closing :3000 to everything but the proxy closes that, because
+#      NPM overwrites X-Forwarded-For with the real client address.
+#
+# Deliberately a SEPARATE table from the distro's `inet filter`, so this can be
+# added and removed wholesale (`nft delete table inet trading_fw`) without
+# touching anything else. In nftables every table sees the packet, so a drop
+# here applies regardless of what the other table's policy is.
+#
+# NOT touched: ssh, and the backend on :8000 / OpenD on :11111 — both already
+# bind 127.0.0.1 only, so no packet from off-box ever reaches them.
+
+table inet trading_fw {
+	chain input {
+		# priority filter + 10: run after the distro table, so this only ever
+		# adds a restriction rather than pre-empting something else.
+		type filter hook input priority filter + 10; policy accept;
+
+		# Never break a flow that is already open — including the ssh session
+		# someone is using to fix a mistake in this file.
+		ct state established,related accept
+
+		# Local traffic. `ip route get 192.168.68.107` resolves to `dev lo` on
+		# this box, so requests to its own LAN address land here too — which is
+		# what keeps deploy/rebuild_frontend.sh's health check working.
+		iif lo accept
+
+		# NGINX Proxy Manager. Identified by serving the
+		# *.koller-server.duckdns.org certificate and the admin UI on :81.
+		tcp dport 3000 ip saddr 192.168.68.48 counter accept
+
+		# Everything else. Counters are here so "is this rule doing anything?"
+		# is answerable with `nft list table inet trading_fw` instead of a
+		# packet capture.
+		tcp dport 3000 counter drop
+	}
+}

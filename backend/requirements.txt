@@ -1,0 +1,64 @@
+# Python 3.11 (Debian 12 bookworm default) — see CLAUDE.md, do not bump to 3.12.
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# Data gateway. This pin MUST match the installed OpenD build.
+# Installed OpenD reports server_ver=1010; installed package is 10.10.7008.
+moomoo-api==10.10.7008
+
+APScheduler==3.11.0
+openai==1.59.6
+feedparser==6.0.11
+
+# Imported directly by app/routers/health.py and app/startup_check.py. It
+# arrives transitively via openai, but relying on that means an openai bump
+# could drop it and break the health endpoint — pinned explicitly so the
+# dependency is stated where it is used.
+httpx==0.28.1
+
+# Indicators. NOTE: pandas-ta is deliberately absent — it cannot be installed
+# on Python 3.11 at all. PyPI now serves only 0.4.67b0/0.4.71b0, both
+# requiring Python >=3.12, and 0.3.14b0 has been withdrawn from the index;
+# `pip install -r` fails outright if it is listed. Python 3.11 is fixed by the
+# Debian 12 base, so SMA/MACD/Bollinger are hand-rolled in pure pandas in
+# app/services/indicators.py instead. See CLAUDE.md decisions log #1.
+# numpy/pandas are held below their next majors deliberately.
+numpy==1.26.4
+pandas==2.2.3
+
+# --- Authentication -------------------------------------------------------
+# The dashboard is now reachable from the public internet, so the X-API-Key
+# shared secret is no longer sufficient on its own (it is shipped to whoever
+# loads the page). TOTP provides the second factor.
+#
+# Password hashing is stdlib scrypt, so nothing is pinned for it. That is a
+# dependency-surface choice, not a verdict on argon2: this box has been found
+# corrupting shared objects on disk with single-bit flips (pandas' lib.so had
+# 15, all xor 0x08/0x10 — the same fault CLAUDE.md records for numpy's
+# libgfortran), and a corrupted KDF returns wrong digests with nothing in any
+# log. Fewer native dependencies is fewer things that can do that silently.
+# See services/auth_service.py for the full measurement.
+pyotp==2.10.0
+
+# --- Web Push -------------------------------------------------------------
+# Deliberately NOT pywebpush. From 2.x it hard-depends on BOTH aiohttp and
+# requests — two additional HTTP stacks, one of them compiled, on a 4 GiB box,
+# for what is "POST an encrypted blob with a JWT". This project standardises
+# on httpx (pinned above), so the ~40 lines that assemble the request live in
+# services/web_push.py and these two libraries do the actual cryptography:
+# py-vapid signs the VAPID JWT, http-ece does RFC-8291 aes128gcm.
+#
+# http-ece has never published a wheel, at any version. Its sdist declares no
+# ext_modules, so pip's PEP-517 build needs only setuptools and completes
+# without a compiler — verified in a clean venv on this box. It would break
+# under --no-build-isolation or against an offline mirror.
+py-vapid==1.9.4
+http-ece==1.2.1
+
+# Arrives via py-vapid/http-ece rather than being imported directly, but pinned
+# explicitly for the same reason httpx is: a transitive dep that the code
+# depends on should be stated where it is used. cp311-abi3 manylinux wheels.
+cryptography==50.0.0

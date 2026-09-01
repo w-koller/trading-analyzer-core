@@ -1,0 +1,42 @@
+[Unit]
+Description=Trading analyzer Next.js frontend
+# After, but deliberately NOT Requires: the frontend must still come up and
+# render "Backend unreachable" when the backend is down. That banner is the
+# whole point — a frontend that refuses to start tells the user nothing.
+After=network-online.target trading-backend.service
+Wants=network-online.target
+
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=trading
+WorkingDirectory=/opt/trading-analyzer/core/frontend
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+
+# Fail fast and legibly when someone forgets to build, instead of emitting a
+# Next.js stack trace about a missing production build.
+ExecStartPre=/usr/bin/test -f /opt/trading-analyzer/core/frontend/.next/BUILD_ID
+
+# `next` directly, NOT `npm run start`. With npm as the unit's main process
+# SIGTERM is not forwarded to the Next child, so every stop/restart waits out
+# TimeoutStopSec and then SIGKILLs.
+ExecStart=/opt/trading-analyzer/core/frontend/node_modules/.bin/next start -p 3000
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+MemoryHigh=512M
+MemoryMax=768M
+OOMPolicy=continue
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# `next start` writes into .next/cache at runtime.
+ReadWritePaths=/opt/trading-analyzer/core/frontend/.next
+
+[Install]
+WantedBy=multi-user.target

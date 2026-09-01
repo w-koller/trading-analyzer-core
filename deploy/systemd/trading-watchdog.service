@@ -1,0 +1,12 @@
+[Unit]
+Description=Trading analyzer backend watchdog (restarts a wedged backend)
+After=trading-backend.service
+
+[Service]
+Type=oneshot
+# tmpfs under /run: the failure counters should reset on boot, not persist
+# across one.
+RuntimeDirectory=trading-watchdog
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/trading-analyzer/core/deploy/watchdog/trading-watchdog.sh
+# Runs as root: it must be able to `systemctl restart` the backend.

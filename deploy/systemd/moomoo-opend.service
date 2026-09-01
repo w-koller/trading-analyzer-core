@@ -1,0 +1,29 @@
+[Unit]
+# Named moomoo-opend, not opend: that is what is installed, enabled and
+# running on the live box, and it is the unit that survived the -console=1 +
+# LD_LIBRARY_PATH debugging. The repo file was renamed to match reality
+# rather than renaming a working unit to match the repo.
+Description=Moomoo OpenD headless gateway
+After=network-online.target
+Wants=network-online.target
+
+# Restart=always alone is not enough: the default 5-starts-in-10s limit would
+# have turned the documented -console=0 crash loop into a permanent `failed`,
+# which is a silent outage rather than a noisy one.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=trading
+WorkingDirectory=/opt/opend
+Environment="LD_LIBRARY_PATH=/opt/opend"
+EnvironmentFile=/opt/opend/opend.env
+ExecStart=/opt/opend/OpenD -login_account=${MOOMOO_LOGIN_ACCOUNT} -login_by_remember=1 -console=1 -lang=en
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/opend
+
+[Install]
+WantedBy=multi-user.target

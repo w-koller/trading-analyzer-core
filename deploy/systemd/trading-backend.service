@@ -1,0 +1,67 @@
+[Unit]
+Description=Trading analyzer FastAPI backend
+# Wants, never Requires. The backend is *designed* to run without OpenD:
+# routers/health.py and routers/positions.py exist to report a dead session
+# rather than fail with it, and coupling the lifecycles would throw that away.
+# (The old `Requires=opend.service` also named a unit that does not exist on
+# this box — the installed one is moomoo-opend.service — so the backend
+# refused to start at all.)
+After=network-online.target moomoo-opend.service
+Wants=network-online.target moomoo-opend.service
+
+# Never give up restarting. The default is 5 starts in 10s, after which
+# systemd parks the unit in `failed` permanently — on an unattended homelab
+# box that turns a transient crash loop into an outage nobody notices until
+# they next open the dashboard.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=trading
+WorkingDirectory=/opt/trading-analyzer/core/backend
+EnvironmentFile=/opt/trading-analyzer/core/backend/.env
+# API_HOST/API_PORT in .env are NOT read by uvicorn — these flags are the
+# truth. 127.0.0.1 since the same-origin proxy landed: the browser now reaches
+# the API at /api on the Next.js origin, which forwards over loopback, so
+# nothing off this box has any reason to open :8000. This retires the LAN
+# exposure decisions #19 introduced — the shared secret was always only a
+# partial answer to it, since it shipped to every browser that loaded the page.
+#
+# uvicorn's --proxy-headers is ON by default and trusts X-Forwarded-For from
+# 127.0.0.1, which is what makes per-IP login lockout see real client
+# addresses. That trust is why the Next server must not forward a
+# client-supplied XFF blindly.
+ExecStart=/opt/trading-analyzer/core/backend/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 --timeout-graceful-shutdown 25
+
+# always, not on-failure: a clean exit(0) (uvicorn losing its socket, a
+# library raising SystemExit) was previously never restarted.
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+# Unbuffered, or journald sees output in 8KB chunks instead of as it happens.
+Environment=PYTHONUNBUFFERED=1
+# The moomoo SDK unconditionally mkdir's ~/.com.moomoo.OpenD at import time.
+# `trading`'s home is the repo root, which ProtectSystem=strict mounts
+# read-only, so importing the SDK raised OSError(EROFS) and the service
+# crash-looped. Point HOME at a directory that is in ReadWritePaths.
+Environment=HOME=/opt/trading-analyzer/core/backend/data
+# A 45-ticker scan is chatty; the journald default rate limit silently drops
+# exactly the lines worth having afterwards.
+LogRateLimitBurst=5000
+
+# 4 GiB box shared with next-server, OpenD and the editor server. Backend
+# idles ~135 MB and spikes during pandas kline work. OOMPolicy=continue plus
+# Restart=always means a cgroup OOM restarts rather than wedges.
+MemoryHigh=768M
+MemoryMax=1200M
+OOMPolicy=continue
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/trading-analyzer/core/backend/data
+
+[Install]
+WantedBy=multi-user.target

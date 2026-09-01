@@ -1,0 +1,12 @@
+[Unit]
+Description=Probe the trading backend every minute
+
+[Timer]
+# Late enough after boot that a normal start isn't mistaken for a wedge.
+OnBootSec=3min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

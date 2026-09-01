@@ -1,0 +1,49 @@
+#!/usr/sbin/nft -f
+#
+# Restrict the Ollama API to the trading LXC.
+#
+# RUNS ON THE OLLAMA LXC (192.168.68.49), not on the trading box. Nothing in
+# this repo installs it — see deploy/README-ollama.md.
+#
+# The companion drop-in (deploy/systemd/ollama.service.d/override.conf) binds
+# Ollama to 0.0.0.0 so the backend can reach it at all. Ollama has NO
+# AUTHENTICATION of any kind, so on its own that hands every host on the LAN
+# an open model API: list models, run generations against the GPU, pull new
+# ones, and `DELETE /api/delete` the ones this project depends on. The bind
+# and this file are two halves of one change and must be installed together.
+#
+# Same shape as trading.nft, and for the same reason: bind broadly, then let
+# the firewall decide who may connect. Deliberately a SEPARATE table from the
+# distro's `inet filter`, so it can be removed wholesale
+# (`nft delete table inet ollama_fw`) without touching anything else. In
+# nftables every table sees the packet, so a drop here applies regardless of
+# what the other table's policy is.
+#
+# Ordering is load-bearing, exactly as in trading.nft:
+#   - `ct state established,related` FIRST, so a mistake in this file cannot
+#     cut off the ssh session you are editing it from.
+#   - `iif lo accept`, so the LXC can still reach its own API — `ollama run`,
+#     `ollama pull` and any local health check all go through 11434.
+# Only then the single permitted source, then the drop.
+#
+# NOT touched: ssh. Locking yourself out of the box that holds the models is
+# not a tradeoff worth making for a service that has no auth anyway.
+#
+# Persist it: this loads the ruleset for the current boot only. Add it to
+# /etc/nftables.conf (or /etc/nftables.d/) and `systemctl enable nftables`,
+# or it silently disappears on the next restart — and a firewall that is gone
+# after a reboot verifies identically to one that works.
+
+table inet ollama_fw {
+	chain input {
+		type filter hook input priority filter + 10; policy accept;
+
+		ct state established,related accept
+		iif lo accept
+
+		# The trading LXC. The ONLY host with any business here.
+		ip saddr 192.168.68.107 tcp dport 11434 accept
+
+		tcp dport 11434 drop
+	}
+}

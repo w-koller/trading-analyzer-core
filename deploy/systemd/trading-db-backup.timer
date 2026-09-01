@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly trading.db backup
+
+[Timer]
+OnCalendar=hourly
+# Catch up after downtime — a missed backup window is exactly when you want one.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

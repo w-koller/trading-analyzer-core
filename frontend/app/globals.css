@@ -1,0 +1,174 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * Design tokens.
+ *
+ * Both themes are defined here because the light/dark toggle is a product
+ * rule, not a nicety — `next-themes` flips the `.dark` class on <html> and
+ * every colour below has to answer for both cases. Anything hardcoded to a
+ * literal Tailwind colour breaks one of the two themes, so components should
+ * reference these tokens rather than `neutral-900`/`emerald-500`/etc.
+ *
+ * Semantic tokens beyond shadcn's base set:
+ *   --bull / --bear   direction, P/L, gainers/losers. Never plain red/green
+ *                     literals, so the two themes can use different
+ *                     saturations without every component knowing.
+ *   --delayed         the "this quote is 15 minutes old" amber (rule #7).
+ *   --held            "you own this" — deliberately the brand violet rather
+ *                     than another status colour, so it reads as identity,
+ *                     not as a warning.
+ */
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 30% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 30% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 30% 12%;
+
+    --primary: 258 90% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 250 30% 96%;
+    --secondary-foreground: 222 30% 20%;
+
+    --muted: 220 15% 96%;
+    --muted-foreground: 220 10% 44%;
+
+    --accent: 250 40% 95%;
+    --accent-foreground: 258 60% 35%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 88%;
+    --ring: 258 90% 58%;
+
+    --sidebar-background: 258 55% 34%;
+    --sidebar-foreground: 250 40% 96%;
+    --sidebar-border: 258 40% 44%;
+    --sidebar-accent: 258 50% 46%;
+    --sidebar-muted: 250 25% 78%;
+    /* Form controls sitting ON the sidebar. The sidebar is dark purple in
+       BOTH themes, so a control styled with the page-level --background/
+       --input tokens renders a white box carrying inherited near-white
+       --sidebar-foreground text. That is not a contrast nit, it is an
+       invisible control, and only in light theme. */
+    --sidebar-input: 258 45% 26%;
+    --sidebar-input-border: 258 35% 50%;
+    /* Status text on the sidebar. NOT --delayed/--bear, and emphatically not
+       their -muted partners: those are a fill/ink pair tuned for a card whose
+       background flips with the theme, and --delayed-muted is a near-white
+       amber in light mode but a near-black one in dark. The sidebar is dark in
+       BOTH themes, so its status colours are light in both and do not flip. */
+    --sidebar-warning: 38 95% 68%;
+    --sidebar-danger: 0 85% 76%;
+
+    --bull: 152 60% 34%;
+    --bull-foreground: 0 0% 100%;
+    --bull-muted: 152 55% 94%;
+
+    --bear: 0 72% 48%;
+    --bear-foreground: 0 0% 100%;
+    --bear-muted: 0 72% 96%;
+
+    --flat: 220 10% 46%;
+    --flat-muted: 220 14% 95%;
+
+    --delayed: 38 92% 42%;
+    --delayed-muted: 38 92% 95%;
+
+    --held: 271 70% 52%;
+    --held-muted: 271 70% 96%;
+
+    --radius: 0.65rem;
+  }
+
+  .dark {
+    --background: 222 26% 7%;
+    --foreground: 220 20% 94%;
+
+    --card: 222 22% 10%;
+    --card-foreground: 220 20% 94%;
+
+    --popover: 222 24% 11%;
+    --popover-foreground: 220 20% 94%;
+
+    --primary: 258 90% 68%;
+    --primary-foreground: 258 60% 12%;
+
+    --secondary: 222 18% 16%;
+    --secondary-foreground: 220 20% 92%;
+
+    --muted: 222 18% 15%;
+    --muted-foreground: 220 12% 62%;
+
+    --accent: 258 35% 20%;
+    --accent-foreground: 258 80% 84%;
+
+    --destructive: 0 72% 58%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 16% 18%;
+    --input: 220 16% 22%;
+    --ring: 258 90% 68%;
+
+    --sidebar-background: 258 32% 11%;
+    --sidebar-foreground: 250 30% 92%;
+    --sidebar-border: 258 25% 20%;
+    --sidebar-accent: 258 45% 24%;
+    --sidebar-muted: 250 15% 62%;
+    --sidebar-input: 258 30% 17%;
+    --sidebar-input-border: 258 25% 30%;
+    --sidebar-warning: 38 95% 62%;
+    --sidebar-danger: 0 80% 70%;
+
+    --bull: 152 58% 46%;
+    --bull-foreground: 152 60% 8%;
+    --bull-muted: 152 45% 15%;
+
+    --bear: 0 76% 62%;
+    --bear-foreground: 0 60% 10%;
+    --bear-muted: 0 50% 17%;
+
+    --flat: 220 12% 60%;
+    --flat-muted: 222 15% 18%;
+
+    --delayed: 38 95% 60%;
+    --delayed-muted: 38 60% 16%;
+
+    --held: 271 80% 68%;
+    --held-muted: 271 45% 20%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+  /* Prices and metrics line up in columns only if the digits do. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
