@@ -23,10 +23,12 @@
  * `POST /chat/{code}/stream` is SSE and must arrive token by token. Verified
  * against the installed Next 15.2.8:
  *
- *   - `cache: "no-store"` on the outbound fetch is the load-bearing part.
- *     Next patches global fetch and, whenever a cache key is generated, does
- *     `await res.arrayBuffer()` on the response — which would turn an
- *     hour-long stream into a single buffered reply at the end of it.
+ *   - The outbound call is undici's own `fetch`, NOT the global one, so Next's
+ *     patched fetch is out of the path entirely. That patch does
+ *     `await res.arrayBuffer()` whenever it generates a cache key, which would
+ *     turn an hour-long stream into one buffered reply at the end of it; the
+ *     `cache: "no-store"` that used to hold that off is no longer needed,
+ *     because the thing it was defending against never sees this request.
  *   - Returning `res.body` unread lets Next pipe it straight to the socket,
  *     flushing per chunk.
  *   - `X-Accel-Buffering: no` is set by the backend and must survive to nginx,
@@ -35,6 +37,7 @@
  * The request body is buffered with `arrayBuffer()` rather than streamed, so
  * `duplex: "half"` is not needed — every request here is small JSON.
  */
+import { Agent, fetch as undiciFetch } from "undici";
 
 // Never prerender or cache: this is a proxy for live, per-user data.
 export const dynamic = "force-dynamic";
@@ -42,6 +45,41 @@ export const runtime = "nodejs";
 
 const BACKEND =
   process.env.BACKEND_ORIGIN?.replace(/\/$/, "") || "http://127.0.0.1:8000";
+
+/**
+ * ## Why this proxy has no 300-second ceiling
+ *
+ * `POST /scan/run` blocks for the whole scan — 60-120s per ticker, so over an
+ * hour for a full watchlist (decisions #22), which is why `lib/api.ts` passes
+ * `null` for the browser-side timeout. That only removes the ceiling on the
+ * browser -> Next leg. Node's fetch is undici, whose DEFAULT `headersTimeout`
+ * is 300s, so the Next -> backend leg had one of its own: the proxy gave up
+ * at five minutes and answered 502 while the backend carried on and finished
+ * the work. It went unnoticed because the scan dialog infers progress from
+ * `trade_setups` rows carrying the running `scanner_run_id` rather than from
+ * this response, so the scan looks fine while its own request has already
+ * failed.
+ *
+ * Both timeouts are disabled rather than raised. Picking a number means
+ * guessing how slow the slowest cold model load can be, and guessing low
+ * reintroduces exactly this on a worse day. Nothing is lost by removing the
+ * ceiling here: the backend has its own timeouts, `lib/api.ts` sets the
+ * per-call ones the UI wants, and the client can abort.
+ *
+ * ## Why `undici.fetch` and not `fetch(..., { dispatcher })`
+ *
+ * The cloud portal's copy of this proxy passes the dispatcher to the GLOBAL
+ * fetch. **That form is inert on this box**, measured on Node 18.20.4 against
+ * a server that holds its headers for 6s: with `headersTimeout: 2000`, global
+ * fetch returned 200 at 6.0s (the option was ignored) while undici's own
+ * fetch threw `UND_ERR_HEADERS_TIMEOUT` at 2.5s. `setGlobalDispatcher` is no
+ * help either — it sets the npm package's global agent, and Node's built-in
+ * fetch has its own internal copy of undici that never consults it. Node 18
+ * simply does not read `dispatcher` off a RequestInit. So the dispatcher has
+ * to be handed to the fetch that belongs to the same undici as the Agent,
+ * which means importing both.
+ */
+const dispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
 /**
  * Hop-by-hop headers, which describe one TCP connection and must not be
@@ -83,14 +121,17 @@ async function proxy(req: Request): Promise<Response> {
 
   let upstream: Response;
   try {
-    upstream = await fetch(target, {
+    // undici's Response is structurally the same object the Web API defines
+    // and its `body` is a global ReadableStream, which is what `new Response`
+    // below wants; the two type declarations are just not related by
+    // inheritance.
+    upstream = (await undiciFetch(target, {
       method: req.method,
       headers,
       body,
       redirect: "manual",
-      // See the note above — without this the SSE stream is buffered whole.
-      cache: "no-store",
-    });
+      dispatcher,
+    })) as unknown as Response;
   } catch (err) {
     // 502, not 500: the proxy is fine, the thing behind it is not. The
     // dashboard's health banner distinguishes these, so the status matters.
