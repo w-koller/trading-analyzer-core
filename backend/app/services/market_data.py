@@ -23,13 +23,13 @@ from typing import Any
 
 import pandas as pd
 
+from app.config import settings
 from app.services import indicators
 from app.services.gateway_errors import GatewayError
 from app.utils import market_hours
 
 logger = logging.getLogger(__name__)
 
-KLINE_CACHE_TTL = 300.0        # 5 min; protects the per-account kline quota
 KLINE_LOOKBACK_DAYS = 400      # enough for a 200-period SMA plus warm-up
 
 # OpenD's wording when the account has no market-data right for a market. It
@@ -72,6 +72,23 @@ def _is_not_entitled(exc: Exception) -> bool:
 _kline_cache: dict[str, tuple[float, Any]] = {}
 
 
+def cache_ttl() -> float:
+    """How long a cached bar set stays fresh, in seconds.
+
+    Read from settings on every call rather than captured in a module
+    constant, and there is deliberately no second copy of the default here:
+    `settings.kline_cache_ttl_seconds` is the only owner of this number. Two
+    owners for one value is how a config line gets set on a box and changes
+    nothing, which is the failure `main.py` already warns about for the corpus
+    path.
+
+    Self-hosted keeps the historical 300s. Cloud raises it, because there a
+    fetch spends one of 800 shared daily credits and the bars are daily
+    anyway — see the setting's own note.
+    """
+    return float(settings.kline_cache_ttl_seconds)
+
+
 def get_cached_bars(
     gateway,
     code: str,
@@ -88,7 +105,7 @@ def get_cached_bars(
     now = time.monotonic()
     if use_cache and cache_key in _kline_cache:
         cached_at, bars = _kline_cache[cache_key]
-        if now - cached_at < KLINE_CACHE_TTL:
+        if now - cached_at < cache_ttl():
             return bars
 
     end = datetime.now(timezone.utc).date()
@@ -237,7 +254,7 @@ def get_klines_with_overlays(
 
     # From the newest bar, not the clock — the chart had the same freshness
     # lie as the scanner: it reported "as of now" while serving bars that
-    # could be days old (or up to KLINE_CACHE_TTL stale from the cache).
+    # could be days old (or up to the kline cache TTL stale from the cache).
     last_bar_time = bars[time_col].iloc[-1] if time_col else None
 
     return {

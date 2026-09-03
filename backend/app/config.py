@@ -54,6 +54,24 @@ class Settings(BaseSettings):
     # caches by ticker rather than by user.
     twelve_data_daily_credits: int = 800
 
+    # --- Market data cache --------------------------------------------------
+    # How long `market_data.get_cached_bars` serves a stored bar set before
+    # refetching. It is a setting rather than a constant because the two
+    # deployments meter bars differently, and this is the one number that
+    # decides how often either one pays.
+    #
+    # 300s is what the self-hosted box has always used: it draws on a broker
+    # quota nobody counts per request, and a five-minute window keeps an
+    # intraday chart's forming candle roughly current. Cloud spends one of 800
+    # daily Twelve Data credits per fetch, shared across every user, and the
+    # bars are DAILY — so a five-minute window there buys a fresher forming
+    # candle at up to 288 credits per ticker per day. Cloud sets 1800.
+    #
+    # NOT a deployment_mode conditional: that would be a branch inside shared
+    # code, which is the tripwire cloud #1 sets for the monorepo having stopped
+    # paying. A number a deployment chooses is a setting.
+    kline_cache_ttl_seconds: float = 300.0
+
     # --- Moomoo / OpenD ---
     opend_host: str = "127.0.0.1"
     opend_port: int = 11111

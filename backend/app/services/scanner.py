@@ -19,7 +19,8 @@ subsequent cycles. Over time every ticker is covered, oldest first, and no
 cycle overruns into the next.
 
 History klines draw on a per-account quota, so bars are cached per
-(code, window) for KLINE_CACHE_TTL rather than refetched every cycle.
+(code, window) for `market_data.cache_ttl()` rather than refetched every
+cycle.
 
 Failure is per-ticker, never per-cycle: one dead chain or one model timeout
 costs that ticker's setup and is counted in the run record. A watchlist sync
@@ -120,8 +121,8 @@ def scan_ticker(
 
     `force` bypasses the kline cache, so an on-demand scan can be made to
     refetch bars rather than reusing a cached window up to
-    KLINE_CACHE_TTL old. It costs quota — that is the point of it being
-    opt-in.
+    `market_data.cache_ttl()` old. It costs quota — that is the point of
+    it being opt-in.
     """
     started = time.time()
     try:

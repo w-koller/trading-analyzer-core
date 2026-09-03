@@ -14,8 +14,16 @@ from app.services.similarity import describe_vector
 router = APIRouter(prefix="/setups", tags=["setups"])
 
 
-def _hydrate(row: dict[str, Any]) -> dict[str, Any]:
-    """Decode the JSON columns so the frontend doesn't parse strings twice."""
+def hydrate_setup(row: dict[str, Any]) -> dict[str, Any]:
+    """Decode the JSON columns so the frontend doesn't parse strings twice.
+
+    Public, and named without an underscore, because it is imported across a
+    package boundary: the Informed Trader cloud backend serves the same stored
+    rows and must not own a second copy of "what a setup row looks like once
+    it is decoded". A private name that another package imports is the worst
+    of both worlds — decisions #63 made exactly this call for `db.now_iso` and
+    `prompt_blocks.age_label`.
+    """
     out = dict(row)
     for field in ("indicator_snapshot", "feature_vector", "similar_setup_ids"):
         raw = out.get(field)
@@ -108,7 +116,7 @@ def _recent(limit: int, code: str | None, min_conviction: int | None,
     params.append(limit)
 
     with db.get_connection() as conn:
-        return [_hydrate(dict(r)) for r in conn.execute(query, params).fetchall()]
+        return [hydrate_setup(dict(r)) for r in conn.execute(query, params).fetchall()]
 
 
 @router.get("")
@@ -161,7 +169,7 @@ async def latest_for_code(code: str):
     row = await run_in_threadpool(db.get_latest_setup_for_code, code)
     if row is None:
         raise HTTPException(status_code=404, detail=f"no setup recorded for {code}")
-    return _hydrate(row)
+    return hydrate_setup(row)
 
 
 def _one(setup_id: int):
@@ -177,7 +185,7 @@ async def get_setup(setup_id: int):
     row = await run_in_threadpool(_one, setup_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"no setup {setup_id}")
-    return _hydrate(row)
+    return hydrate_setup(row)
 
 
 @router.get("/{setup_id}/similar")
