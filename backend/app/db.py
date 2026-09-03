@@ -829,6 +829,21 @@ def set_ticker_enabled(code: str, enabled: bool) -> None:
         )
 
 
+def get_watchlist_ticker(code: str) -> dict[str, Any] | None:
+    """One ticker's master record, or None.
+
+    The per-code read of a table that is already keyed by code. Added because
+    a caller that only wants to know what `name` is currently stored should not
+    have to pull the whole enabled list and scan it, and must not reach into
+    this module's connection to ask.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM watchlist_cache WHERE code = ?", (code,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_enabled_tickers(market: Market | None = None) -> list[dict[str, Any]]:
     """Tickers the scanner should process this cycle."""
     with get_connection() as conn:
@@ -1522,15 +1537,32 @@ def list_news(
     since: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    codes: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Articles, newest first, with their ticker links attached."""
+    """Articles, newest first, with their ticker links attached.
+
+    `codes` is the set form of `code`, and exists for the same reason
+    `get_setup_history(codes)` is the batched form of
+    `get_latest_setup_for_code`: a caller holding a list should ask once, not
+    once per ticker. It also answers a question `watchlist_only` cannot — that
+    flag joins the WHOLE of `watchlist_cache`, which on a shared multi-tenant
+    corpus is the union of every user's watchlist rather than the caller's own.
+    An empty list means "no tickers", and correctly returns nothing; None means
+    "not filtering by ticker at all".
+    """
     query = """
         SELECT a.* FROM news_articles a
     """
     clauses: list[str] = []
     params: list[Any] = []
 
-    if code:
+    if codes is not None:
+        if not codes:
+            return []
+        query += " JOIN news_article_tickers t ON t.article_id = a.id "
+        clauses.append(f"t.code IN ({','.join('?' * len(codes))})")
+        params.extend(codes)
+    elif code:
         query += " JOIN news_article_tickers t ON t.article_id = a.id "
         clauses.append("t.code = ?")
         params.append(code)
