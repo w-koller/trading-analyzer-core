@@ -47,11 +47,11 @@ check("title and body are the alert's own strings — the model never phrases th
 
 # --- severity floor ------------------------------------------------------
 settings.push_min_severity = "warn"
-check("critical passes a 'warn' floor", push_service._passes_severity("critical"))
-check("warn passes a 'warn' floor", push_service._passes_severity("warn"))
-check("info does NOT pass a 'warn' floor", not push_service._passes_severity("info"))
+check("critical passes a 'warn' floor", push_service.passes_severity("critical"))
+check("warn passes a 'warn' floor", push_service.passes_severity("warn"))
+check("info does NOT pass a 'warn' floor", not push_service.passes_severity("info"))
 settings.push_min_severity = "info"
-check("info passes when the floor is lowered", push_service._passes_severity("info"))
+check("info passes when the floor is lowered", push_service.passes_severity("info"))
 settings.push_min_severity = "warn"
 
 # --- delivery, with the network stubbed ----------------------------------

@@ -45,7 +45,17 @@ logger = logging.getLogger(__name__)
 _SEVERITY_RANK = {"critical": 0, "warn": 1, "info": 2}
 
 
-def _passes_severity(severity: str) -> bool:
+def passes_severity(severity: str) -> bool:
+    """Whether this severity clears the configured push floor.
+
+    Public, because the cloud deployment's own delivery cycle applies the same
+    floor and a private name imported across a package boundary is the worst of
+    both worlds — decisions #63 made this exact call for `db.now_iso` and
+    `prompt_blocks.age_label`, and cloud #28e made it again for
+    `routers/setups.hydrate_setup`. Both deployments must agree on what is
+    worth waking somebody for; two copies of this expression would be two
+    things to forget to change.
+    """
     floor = _SEVERITY_RANK.get(settings.push_min_severity, 1)
     return _SEVERITY_RANK.get(severity, 9) <= floor
 
@@ -88,7 +98,7 @@ def pending_alerts(trade_gateway) -> list[dict[str, Any]]:
 
     return [
         a for a in alerts
-        if _passes_severity(a["severity"])
+        if passes_severity(a["severity"])
         and a["id"] not in acked          # silenced in the UI stays silenced
         and a["id"] not in already        # this exact fact was already sent
     ]
