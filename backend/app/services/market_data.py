@@ -131,6 +131,37 @@ def get_cached_bars(
     return bars
 
 
+def peek_cached_bars(
+    gateway,
+    code: str,
+    days: int = KLINE_LOOKBACK_DAYS,
+):
+    """Bars from the cache if they are there and still fresh, else None.
+
+    `get_cached_bars` FETCHES on a miss, which is right for every caller that
+    needs bars and wrong for one that only wants the bars somebody else has
+    already paid for. Bookkeeping that reads through to the wire is how a
+    background job quietly spends an interactive budget.
+
+    Public rather than a private name reached across a package boundary: the
+    cloud deployment records each ticker's last two closes straight after a
+    scan, and importing `_kline_cache` to do it would be the worst of both
+    worlds — the same call decisions #63 made for `db.now_iso` and cloud #28e
+    for `hydrate_setup`. Deployment-agnostic: it knows nothing about who is
+    asking or why, and self-hosted behaviour is untouched because nothing
+    there calls it.
+
+    Keyed identically to `get_cached_bars`, `days` included, so a caller that
+    passes a different window gets None rather than a differently-sized frame.
+    """
+    cache_key = f"{getattr(gateway, 'cache_namespace', '')}|{code}:{days}"
+    entry = _kline_cache.get(cache_key)
+    if entry is None:
+        return None
+    cached_at, bars = entry
+    return bars if time.monotonic() - cached_at < cache_ttl() else None
+
+
 def clear_kline_cache() -> None:
     _kline_cache.clear()
 

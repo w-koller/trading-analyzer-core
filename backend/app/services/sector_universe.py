@@ -64,7 +64,12 @@ import logging
 from typing import Any
 
 from app import db
-from app.services.sdk_gateway import RateLimiter
+# From its real home rather than `sdk_gateway`'s back-compat re-export, which
+# drags `moomoo` in at module scope (see app/utils/rate_limiter.py). This module
+# needs the gateway for its own work, but `sector_flow` imports it lazily from
+# `rotation_pairs`, so the old path put the SDK back on a code path that had
+# just been freed of it.
+from app.utils.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 

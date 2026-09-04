@@ -62,7 +62,13 @@ from statistics import median
 from typing import Any
 
 from app import db
-from app.services.sdk_gateway import RateLimiter
+# From its real home, not through `sdk_gateway`'s back-compat re-export.
+# That module imports `moomoo` at module scope, so the old path made the whole
+# of this file — including `build_scores`, which is pure arithmetic over its
+# inputs — unimportable on a box without the SDK. Lifting the limiter out was
+# done for exactly this reason (see app/utils/rate_limiter.py). Same object
+# either way; `sector_universe` and `sector_etfs` are corrected alongside it.
+from app.utils.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
