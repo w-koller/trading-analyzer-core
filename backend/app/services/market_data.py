@@ -100,8 +100,22 @@ def get_cached_bars(
     Keyed on (code, days) rather than code alone: a 250-day chart request and
     a 400-day scan request are different windows, and returning the shorter
     one to the scanner would silently starve the 200-period SMA.
+
+    ALSO keyed on the gateway's own `cache_namespace`, when it declares one.
+    Two providers can serve the same code and disagree about the numbers: the
+    cloud deployment's Twelve Data bars are unadjusted while a broker gateway's
+    are forward-adjusted (decisions #7), so one shared key would mean a thesis
+    computed on bars from a different adjustment convention than the one it
+    reports. Where a provider is per-USER it is a second problem as well — one
+    account's entitled bars must not be served to another account out of a
+    shared cache.
+
+    Read as an ATTRIBUTE rather than switched on `deployment_mode`, so each
+    provider declares its own identity and this function needs to know about
+    none of them. `MoomooGateway` declares nothing, so the self-hosted key is
+    unchanged and its behaviour is byte-identical.
     """
-    cache_key = f"{code}:{days}"
+    cache_key = f"{getattr(gateway, 'cache_namespace', '')}|{code}:{days}"
     now = time.monotonic()
     if use_cache and cache_key in _kline_cache:
         cached_at, bars = _kline_cache[cache_key]

@@ -108,6 +108,17 @@ def _walls_for(gateway, code: str, spot: float | None):
         return None
 
 
+def _provider_tag(gateway) -> str | None:
+    """Which data source a gateway represents, or None if it does not say.
+
+    `cache_namespace` may carry a per-user suffix ("mm:42"); only the source
+    half is recorded here, because the corpus is shared and whose entitlement
+    paid for a fetch is not a property of the setup.
+    """
+    namespace = str(getattr(gateway, "cache_namespace", "") or "")
+    return namespace.split(":", 1)[0] or None
+
+
 def scan_ticker(
     gateway,
     code: str,
@@ -179,6 +190,19 @@ def scan_ticker(
             # corpus — so a thesis has to carry its own provenance. Goes in
             # the JSON column, so no schema change.
             "model": ollama_models.active_model(),
+            # And which data source it read. Same argument as `model` directly
+            # above, one layer down: two providers can serve the same code and
+            # disagree — a broker feed is forward-adjusted where a vendor feed
+            # may not be (decisions #7) — so a setup has to carry the
+            # provenance of its NUMBERS as well as of its prose.
+            #
+            # Read from the gateway's own `cache_namespace`, the attribute
+            # `market_data.get_cached_bars` already uses to keep their bars
+            # apart, so a provider declares who it is in exactly one place. A
+            # gateway that declares nothing yields None and the key is simply
+            # absent from the payload, so self-hosted rows are unchanged.
+            **({"data_provider": _provider_tag(gateway)}
+               if _provider_tag(gateway) else {}),
             "bars_used": int(len(bars)),
             "last_bar_time": str(last_bar_time) if last_bar_time is not None else None,
             "bar_age_days": round(bar_age, 2) if bar_age is not None else None,
