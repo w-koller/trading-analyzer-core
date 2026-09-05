@@ -353,6 +353,179 @@ def is_open(market: str, now: datetime | None = None) -> bool:
     return session_of(market, now) is Session.OPEN
 
 
+# --- the forward direction -------------------------------------------------
+#
+# `last_session_start` answers "when did the current session begin". These
+# answer "what happens next", which the module had no way to say — the
+# scheduler crons off `MARKET_SESSIONS` directly and nothing ever needed a
+# future boundary as a value.
+#
+# THEY ARE DEFINED AS "THE NEXT INSTANT `session_of` CHANGES ITS ANSWER", and
+# implemented by evaluating `session_of` at candidate instants rather than by
+# walking the window table. That is not a stylistic preference — the table and
+# `session_of` genuinely disagree in one place. `Window(OVERNIGHT, …,
+# days="sun,mon,tue,wed,thu")` says the US overnight session starts on Sunday
+# evening, but `session_of("US", Sunday 20:00 ET)` returns CLOSED, because the
+# weekend guard fires first and `days` is documented as the cron for that
+# window's SCAN rather than the window's own calendar. A hand-written forward
+# walk would report "opens Sunday 8pm" while every other consumer says the
+# market is shut. Probing makes disagreement impossible instead of unlikely.
+
+#: How far ahead to look. Eight days clears a three-day weekend and still
+#: bounds the work at a few hundred cheap calls.
+DEFAULT_HORIZON_DAYS = 8
+
+
+def _transition_candidates(
+    market: str, now: datetime, horizon_days: int,
+) -> list[datetime]:
+    """Every instant `session_of` could change, strictly after `now`, in UTC.
+
+    `session_of` is piecewise-constant on the intervals these delimit, so the
+    set is complete. Three kinds of boundary, and the third is the one that is
+    easy to miss:
+
+      * every `window.start`;
+      * every `window.end` — AU's 16:12 post-close begins no other window, so
+        an end has to be a candidate in its own right;
+      * **local midnight.** `session_of` changes at Saturday 00:00 ET, when
+        Friday's overnight run stops being reported, and again at Monday
+        00:00 ET when the weekend guard lifts. NEITHER IS A WINDOW BOUNDARY.
+        Without midnights this function is silently wrong every Friday night.
+
+    Built with `datetime.combine(day, t, tzinfo=tz)` so each candidate resolves
+    its own UTC offset — DST is inherited rather than restated.
+    """
+    tz = MARKET_TZ.get(market.upper())
+    windows = MARKET_SESSIONS.get(market.upper())
+    if tz is None or not windows:
+        return []
+
+    local = now.astimezone(tz)
+    times = {time(0, 0)}
+    for window in windows:
+        times.add(window.start)
+        times.add(window.end)
+
+    out: set[datetime] = set()
+    # From yesterday, because a window that wraps midnight can put today's
+    # boundary on yesterday's date in local terms.
+    for offset in range(-1, horizon_days + 1):
+        day = (local + timedelta(days=offset)).date()
+        for t in times:
+            moment = datetime.combine(day, t, tzinfo=tz).astimezone(timezone.utc)
+            if moment > now:
+                out.add(moment)
+    return sorted(out)
+
+
+def next_transition(
+    market: str,
+    now: datetime | None = None,
+    horizon_days: int = DEFAULT_HORIZON_DAYS,
+) -> tuple[datetime, Session] | None:
+    """The next instant `session_of` changes, and what it changes TO.
+
+    None for an unmodelled market, or when nothing changes inside the horizon.
+    """
+    now = _as_utc(now)
+    current = session_of(market, now)
+    for moment in _transition_candidates(market, now, horizon_days):
+        nxt = session_of(market, moment)
+        if nxt is not current:
+            return moment, nxt
+    return None
+
+
+def next_start_of(
+    market: str,
+    session: Session,
+    now: datetime | None = None,
+    horizon_days: int = DEFAULT_HORIZON_DAYS,
+) -> datetime | None:
+    """The next instant `session_of` BEGINS reporting `session`.
+
+    Strictly forward: asked during a session, this returns the NEXT one rather
+    than the current one's start. `last_session_start` is the backward half,
+    and keeping the two asymmetric is what stops a caller reporting "opens in
+    23h" while the market is open.
+    """
+    now = _as_utc(now)
+    previous = session_of(market, now)
+    for moment in _transition_candidates(market, now, horizon_days):
+        current = session_of(market, moment)
+        if current is session and previous is not session:
+            return moment
+        previous = current
+    return None
+
+
+def next_regular_close(
+    market: str,
+    now: datetime | None = None,
+    horizon_days: int = DEFAULT_HORIZON_DAYS,
+) -> datetime | None:
+    """The next end of continuous trading, in UTC.
+
+    NOT `next_transition`. HKEX's OPEN -> BREAK at 12:00 HKT is lunch, and a
+    caller counting down to "the close" would be four hours early every
+    morning. This uses the derived regular close from `MARKET_HOURS`, which
+    already spans the recess because `_window_times` takes the LAST regular
+    window's end.
+    """
+    market = market.upper()
+    tz = MARKET_TZ.get(market)
+    hours = MARKET_HOURS.get(market)
+    if tz is None or hours is None:
+        return None
+
+    now = _as_utc(now)
+    local = now.astimezone(tz)
+    for offset in range(0, horizon_days + 1):
+        day = (local + timedelta(days=offset)).date()
+        if day.weekday() >= 5:
+            continue
+        close = datetime.combine(day, hours[2], tzinfo=tz).astimezone(timezone.utc)
+        if close > now:
+            return close
+    return None
+
+
+def session_outlook(market: str, now: datetime | None = None) -> dict | None:
+    """Everything a session display needs, in one call. All times aware UTC.
+
+    None for an unmodelled market, so a caller can refuse rather than render
+    `session_of`'s CLOSED fallback as though it were a fact about a real
+    exchange.
+
+    `holidays_modelled` is reported rather than left for each consumer to
+    hardcode beside its own caveat. The limitation belongs to the model — this
+    knows about weekends and nothing else about the calendar (decisions #9) —
+    so the model is what says so, and the day a holiday calendar lands every
+    consumer stops claiming it at once.
+    """
+    market = market.upper()
+    if market not in MARKET_SESSIONS:
+        return None
+
+    now = _as_utc(now)
+    session = session_of(market, now)
+    nxt = next_transition(market, now)
+    return {
+        "market": market,
+        "market_tz": MARKET_TZ[market].key,
+        "session": session.value,
+        "is_open": session is Session.OPEN,
+        "since": last_session_start(market, now),
+        "until": nxt[0] if nxt else None,
+        "next_session": nxt[1].value if nxt else None,
+        "next_open": next_start_of(market, Session.OPEN, now),
+        "next_regular_close": next_regular_close(market, now),
+        "holidays_modelled": False,
+        "calendar": "weekends-only",
+    }
+
+
 def describe(code: str, now: datetime | None = None) -> dict:
     """Everything a setup row / AI prompt needs to know about freshness."""
     market = market_of(code)

@@ -1,10 +1,14 @@
 """Functional checks for market_hours. Run: .venv/bin/python -m tests.test_market_hours"""
 
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from app.utils.market_hours import (
     MARKET_HOURS,
     last_session_start,
+    next_regular_close,
+    next_start_of,
+    next_transition,
+    session_outlook,
     session_starts,
     Session,
     data_as_of,
@@ -172,5 +176,124 @@ check("describe as_of", d["data_as_of"], utc(2026, 8, 20, 0, 45))
 
 # --- naive datetime treated as UTC, not crash ---
 check("naive input ok", data_as_of("US", datetime(2026, 8, 20, 3, 30)), now)
+
+# --- the forward direction ---
+#
+# These pin `next_transition` / `next_start_of` / `next_regular_close`, which
+# are defined as "the next instant `session_of` changes its answer" and are
+# implemented by PROBING `session_of` rather than walking the window table.
+# Each check below is one that fails silently if the probe's candidate set is
+# built wrong, so the labels say what is actually at stake.
+
+# Mid-session: the next thing that happens is the close, not tomorrow.
+check("next_transition mid-session", next_transition("US", utc(2026, 8, 20, 14, 0)),
+      (utc(2026, 8, 20, 20, 0), Session.POST_MARKET))
+
+# Strictly forward. At the instant a session opens, the answer is its END —
+# never itself, or a caller counting down would restart at zero.
+check("next_transition at the open is the close",
+      next_transition("US", utc(2026, 8, 20, 13, 30)),
+      (utc(2026, 8, 20, 20, 0), Session.POST_MARKET))
+
+# The US overnight window wraps midnight: 20:00 -> 04:00 ET.
+check("next_transition across the wrap", next_transition("US", utc(2026, 8, 21, 2, 0)),
+      (utc(2026, 8, 21, 8, 0), Session.PRE_MARKET))
+
+# THE MIDNIGHT-ONLY TRANSITION. Friday 23:00 ET is inside the overnight
+# window, and what ends it is Saturday 00:00 ET — the weekend guard, which is
+# NOT a window boundary. Without local midnights in the candidate set this
+# function is wrong every Friday night and nothing else notices.
+check("Friday night ends at local midnight, not at a window edge",
+      next_transition("US", utc(2026, 8, 22, 3, 0)),
+      (utc(2026, 8, 22, 4, 0), Session.CLOSED))
+
+# THE TABLE/session_of DISAGREEMENT. `Window(OVERNIGHT, days="sun,...")` says
+# the overnight session starts Sunday evening; `session_of` says CLOSED,
+# because the weekend guard fires first. A walk over the table would answer
+# Sunday 20:00 ET. The probe follows session_of, so it answers Monday 00:00.
+check("from Saturday the next change is MONDAY midnight, not Sunday evening",
+      next_transition("US", utc(2026, 8, 22, 18, 0)),
+      (utc(2026, 8, 24, 4, 0), Session.OVERNIGHT))
+
+# next_start_of is strictly forward: asked while OPEN it gives the NEXT open,
+# which is what stops a display saying "opens in 23h" during trading.
+check("next_start_of skips the session already running",
+      next_start_of("US", Session.OPEN, utc(2026, 8, 20, 15, 0)),
+      utc(2026, 8, 21, 13, 30))
+check("next_start_of from a Saturday lands on Monday",
+      next_start_of("US", Session.OPEN, utc(2026, 8, 22, 18, 0)),
+      utc(2026, 8, 24, 13, 30))
+
+# LUNCH IS NOT THE CLOSE. HKEX breaks 12:00-13:00; a countdown to the next
+# TRANSITION would be four hours early every morning, so next_regular_close
+# reads the derived close instead.
+check("HK next_transition in the morning is the lunch break",
+      next_transition("HK", utc(2026, 8, 20, 2, 0)),
+      (utc(2026, 8, 20, 4, 0), Session.BREAK))
+check("HK next_regular_close spans the recess",
+      next_regular_close("HK", utc(2026, 8, 20, 2, 0)), utc(2026, 8, 20, 8, 0))
+
+# AU's 16:12 post-close ends a window and begins none, so an END has to be a
+# candidate in its own right.
+check("AU window ENDS are candidates too",
+      next_transition("AU", utc(2026, 8, 20, 6, 5)),
+      (utc(2026, 8, 20, 6, 12), Session.CLOSED))
+
+# DST, both hemispheres. The answer is an INSTANT, so it shifts against UTC
+# when the exchange's offset changes while the wall clock does not.
+check("US open before spring-forward", next_start_of("US", Session.OPEN, utc(2026, 3, 5, 22, 0)),
+      utc(2026, 3, 6, 14, 30))
+check("US open after spring-forward", next_start_of("US", Session.OPEN, utc(2026, 3, 9, 3, 0)),
+      utc(2026, 3, 9, 13, 30))
+check("AU open before AEDT starts", next_start_of("AU", Session.OPEN, utc(2026, 10, 1, 12, 0)),
+      utc(2026, 10, 2, 0, 0))
+check("AU open after AEDT starts", next_start_of("AU", Session.OPEN, utc(2026, 10, 4, 12, 0)),
+      utc(2026, 10, 4, 23, 0))
+
+# An unmodelled market has no answer, and says so rather than falling back.
+check("next_transition on an unknown market", next_transition("SG"), None)
+check("next_start_of on an unknown market", next_start_of("SG", Session.OPEN), None)
+check("next_regular_close on an unknown market", next_regular_close("SG"), None)
+check("session_outlook on an unknown market", session_outlook("SG"), None)
+
+# The horizon is a real bound, not decoration. From a Saturday the next change
+# is Monday midnight; asked to look only at today, the honest answer is None
+# rather than a walk that keeps going until it finds something.
+check("a horizon too short to reach the answer returns None",
+      next_transition("US", utc(2026, 8, 22, 18, 0), horizon_days=0), None)
+check("...and a horizon that reaches it does not",
+      next_transition("US", utc(2026, 8, 22, 18, 0), horizon_days=3),
+      (utc(2026, 8, 24, 4, 0), Session.OVERNIGHT))
+
+# THE PROPERTY THE WHOLE DESIGN EXISTS FOR: the forward walk can never
+# disagree with session_of. Sampled across a full week at 37-minute steps, so
+# every window edge, both midnights and the weekend are crossed.
+_disagreements = []
+_t = utc(2026, 8, 17, 0, 0)
+for _ in range(280):
+    _nxt = next_transition("US", _t)
+    if _nxt is None:
+        _disagreements.append(("no transition", _t))
+    else:
+        _at, _to = _nxt
+        if session_of("US", _at) is not _to:
+            _disagreements.append(("lands on a different session", _t))
+        if session_of("US", _at - timedelta(seconds=1)) is not session_of("US", _t):
+            _disagreements.append(("changes before it says it does", _t))
+    _t += timedelta(minutes=37)
+check("the forward walk never disagrees with session_of", _disagreements, [])
+
+# session_outlook is the bundle a display reads; the shape is the contract.
+_out = session_outlook("US", utc(2026, 8, 20, 14, 0))
+check("outlook reports the running session", _out["session"], "open")
+check("outlook agrees with is_open", _out["is_open"], True)
+check("outlook names the exchange zone", _out["market_tz"], "America/New_York")
+check("outlook `since` matches last_session_start",
+      _out["since"], last_session_start("US", utc(2026, 8, 20, 14, 0)))
+check("outlook states the calendar's limit rather than leaving it to callers",
+      _out["holidays_modelled"], False)
+check("outlook `since` is None when the market is shut",
+      session_outlook("US", utc(2026, 8, 22, 18, 0))["since"], None)
+
 
 report("market_hours")
