@@ -8,6 +8,7 @@ adjust=False, Bollinger ddof=0).
 """
 
 import math
+import statistics
 
 import pandas as pd
 
@@ -17,6 +18,7 @@ from app.services.indicators import (
     compute,
     ema,
     macd,
+    realized_volatility,
     sma,
     sma_cross,
 )
@@ -141,5 +143,42 @@ shuffled = f.sample(frac=1, random_state=1).reset_index(drop=True)
 check("unsorted input gives same close as sorted",
       compute(shuffled, sma_fast=5, sma_slow=10).close,
       compute(f, sma_fast=5, sma_slow=10).close)
+
+# --- realized_volatility -----------------------------------------------
+# Closes chosen so daily returns are exact: +10%, -10%, +10%
+# (110/100 - 1 = 0.10; 99/110 - 1 = -0.10; 108.9/99 - 1 = 0.10).
+# Population stdev checked independently via stdlib statistics.pstdev,
+# not by re-deriving pandas' own formula.
+vol_closes = [100.0, 110.0, 99.0, 108.9]
+vol_returns = [0.10, -0.10, 0.10]
+expected_vol = statistics.pstdev(vol_returns) * math.sqrt(252) * 100.0
+vol = realized_volatility(frame(vol_closes), lookback=3)
+check("realized_volatility matches population-stdev reference", vol, expected_vol)
+
+# Sample stdev (ddof=1) would give a materially different figure — confirm
+# we are NOT that, same discipline as the Bollinger check above.
+sample_vol = statistics.stdev(vol_returns) * math.sqrt(252) * 100.0
+check("realized_volatility does not use sample stdev",
+      math.isclose(vol, sample_vol), False)
+
+# --- Degrades to None rather than raising, on short/missing history ----
+check("realized_volatility None on empty frame",
+      realized_volatility(pd.DataFrame()), None)
+check("realized_volatility None with no close column",
+      realized_volatility(pd.DataFrame({"foo": [1, 2, 3]})), None)
+check("realized_volatility None on too few closes",
+      realized_volatility(frame([100.0, 101.0]), lookback=21), None)
+check("realized_volatility None at exactly lookback closes (needs lookback+1)",
+      realized_volatility(frame([100.0] * 21), lookback=21), None)
+check("realized_volatility computes at exactly lookback+1 closes",
+      realized_volatility(frame([100.0 + i for i in range(22)]), lookback=21)
+      is not None, True)
+
+# --- Unsorted input is sorted by time_key before computing --------------
+f_vol = frame(vol_closes)
+shuffled_vol = f_vol.sample(frac=1, random_state=2).reset_index(drop=True)
+check("realized_volatility sorts unsorted input by time_key",
+      realized_volatility(shuffled_vol, lookback=3),
+      realized_volatility(f_vol, lookback=3))
 
 report("indicators")

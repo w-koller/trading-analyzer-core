@@ -149,6 +149,27 @@ def bollinger(
     return out
 
 
+def realized_volatility(df: pd.DataFrame, lookback: int = 21) -> float | None:
+    """Annualized realized volatility from close-to-close daily returns.
+
+    Population stdev (ddof=0) over the most recent `lookback` daily returns,
+    matching bollinger()'s convention, annualized by sqrt(252) and expressed
+    as a percentage. None on short history — degrades rather than raising,
+    matching compute()'s pattern.
+    """
+    if df is None or df.empty or "close" not in df.columns:
+        return None
+    if "time_key" in df.columns:
+        df = df.sort_values("time_key")
+    closes = df["close"].dropna()
+    if len(closes) < lookback + 1:
+        return None
+    returns = closes.pct_change().dropna().tail(lookback)
+    if len(returns) < lookback:
+        return None
+    return float(returns.std(ddof=0) * (252 ** 0.5) * 100.0)
+
+
 def compute(
     df: pd.DataFrame,
     sma_fast: int = 50,
