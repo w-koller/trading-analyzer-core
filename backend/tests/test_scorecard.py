@@ -212,4 +212,15 @@ sc.save_scores([sc.SetupScore(100, 1, 100.0, 105.0, 5.0, 1, None, 1)])
 check("re-scoring a setup updates in place rather than double-counting",
       sc.scorecard()["total_samples"] == before, "UNIQUE(setup_id, horizon_days)")
 
+# --- bucket_for_conviction (Phase 2 of Portfolio Advisor reaches this
+# publicly; pin the rename behaves identically at every BUCKETS boundary) ---
+check_eq("bucket_for_conviction: low end of the 1-4 bucket", sc.bucket_for_conviction(1), "1-4")
+check_eq("bucket_for_conviction: high end of the 1-4 bucket", sc.bucket_for_conviction(4), "1-4")
+check_eq("bucket_for_conviction: low end of the 5-6 bucket", sc.bucket_for_conviction(5), "5-6")
+check_eq("bucket_for_conviction: high end of the 5-6 bucket", sc.bucket_for_conviction(6), "5-6")
+check_eq("bucket_for_conviction: low end of the 7-10 bucket", sc.bucket_for_conviction(7), "7-10")
+check_eq("bucket_for_conviction: high end of the 7-10 bucket", sc.bucket_for_conviction(10), "7-10")
+check_eq("bucket_for_conviction: below every bucket falls through",
+        sc.bucket_for_conviction(0), "?")
+
 report("thesis scorecard")

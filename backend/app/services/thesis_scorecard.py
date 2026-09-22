@@ -306,7 +306,7 @@ def run_scoring(gateway, limit: int = 500) -> dict[str, Any]:
             "skipped": skipped}
 
 
-def _bucket(score: int) -> str:
+def bucket_for_conviction(score: int) -> str:
     for low, high, label in BUCKETS:
         if low <= score <= high:
             return label
@@ -344,7 +344,8 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
 
     groups: dict[tuple, list[dict[str, Any]]] = {}
     for r in rows:
-        key = (r["horizon_days"], r["trade_direction"], _bucket(r["conviction_score"]))
+        key = (r["horizon_days"], r["trade_direction"],
+               bucket_for_conviction(r["conviction_score"]))
         groups.setdefault(key, []).append(r)
 
     buckets = []
