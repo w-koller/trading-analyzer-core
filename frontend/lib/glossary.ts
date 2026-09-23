@@ -324,6 +324,88 @@ GLOSSARY.sector_constituents = {
     "marked unconfirmed rather than being given a confident score.",
 };
 
+GLOSSARY.dcf = {
+  term: "DCF (Discounted Cash Flow)",
+  short:
+    "Values a company by projecting its future free cash flow and converting it back to what that's worth today.",
+  detail:
+    "Sensitive to three assumptions you control: the growth rate during the forecast years, the discount rate, and the terminal growth rate used past that horizon. Small changes to any of them move the result a lot — that's what the sensitivity matrix below is for.",
+};
+
+GLOSSARY.fcf = {
+  term: "FCF (Free Cash Flow)",
+  short:
+    "Cash a company generates from its business after the spending needed to maintain and grow it — what's actually left over for shareholders.",
+};
+
+GLOSSARY.discount_rate = {
+  term: "Discount rate",
+  short:
+    "The annual return you'd require to tie up money in this stock instead of somewhere else — future cash is worth less than cash today, and this is how much less.",
+  detail:
+    "A higher discount rate means future cash flow counts for less today, which lowers the intrinsic value. Often set to a company's WACC or its cost of equity via CAPM.",
+};
+
+GLOSSARY.wacc = {
+  term: "WACC (Weighted Average Cost of Capital)",
+  short:
+    "A company's blended cost of funding itself, across both debt and equity, weighted by how much of each it uses.",
+};
+
+GLOSSARY.capm = {
+  term: "CAPM",
+  short:
+    "A formula for a stock's expected return: the risk-free rate, plus its beta times the market's extra return over that risk-free rate.",
+  detail:
+    "One common way to arrive at a discount rate: Risk-free rate + Beta × Market risk premium.",
+};
+
+GLOSSARY.terminal_growth = {
+  term: "Terminal growth rate",
+  short:
+    "The slow, steady growth rate a company is assumed to settle into forever, once the explicit forecast years end.",
+  detail:
+    "Conventionally kept at or below the long-run growth rate of the whole economy (roughly 2-2.5%) — a company can't outgrow the economy forever without eventually becoming the whole economy.",
+};
+
+GLOSSARY.enterprise_value = {
+  term: "Enterprise value",
+  short:
+    "The value of the whole business — what an acquirer buying 100% of it would effectively pay, debt included.",
+  detail: "Equals the present value of every projected cash flow plus the terminal value.",
+};
+
+GLOSSARY.equity_value = {
+  term: "Equity value",
+  short:
+    "What's left for shareholders after subtracting the company's debt from enterprise value and adding back its cash.",
+  detail: "Divide by diluted shares outstanding to get a per-share intrinsic value.",
+};
+
+GLOSSARY.gordon_growth = {
+  term: "Gordon Growth Model",
+  short:
+    "Values a dividend-paying stock as next year's expected dividend divided by (your required return minus the dividend's expected growth rate).",
+  detail:
+    "Breaks down whenever the growth rate is at or above the required return — the formula implies an infinite value, so this dashboard flags it rather than showing a number.",
+};
+
+GLOSSARY.nav_per_share = {
+  term: "NAV per share (Net Asset Value)",
+  short:
+    "What's left for shareholders if every asset were sold for its stated value and every liability paid off, divided across all shares.",
+  detail:
+    "A floor-value estimate, most meaningful for asset-heavy businesses — it says nothing about future earning power the way DCF or Gordon Growth do.",
+};
+
+GLOSSARY.margin_of_safety = {
+  term: "Margin of safety",
+  short:
+    "A discount below intrinsic value you require before calling something a buy — a buffer against the assumptions in the valuation being wrong.",
+  detail:
+    "A bigger margin protects against a too-optimistic growth or discount-rate assumption, at the cost of a stricter (and rarer) buy signal.",
+};
+
 export function glossaryEntry(key: string): GlossaryEntry | undefined {
   return GLOSSARY[key];
 }

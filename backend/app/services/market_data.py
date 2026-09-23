@@ -323,6 +323,59 @@ def get_klines_with_overlays(
     }
 
 
+def get_fundamentals(gateway, code: str) -> dict[str, Any]:
+    """Shares outstanding, book value/share and TTM dividend, for one code.
+
+    Every field here already rides through `get_snapshot()` — the same call
+    `get_movers()` makes — and has been silently discarded by every existing
+    caller. Nothing new is fetched from OpenD; this is a second read of a
+    response this app already trusts and paces.
+
+    `net_asset_per_share` is Moomoo's own computed book value per share
+    (assets minus liabilities minus preferred, divided by shares) — it is
+    surfaced as-is, labeled as book value, not decomposed into an
+    Assets/Liabilities split the source data doesn't provide.
+
+    `dividend_ttm` (falling back to `dividend_lfy` when TTM is absent) is a
+    trailing aggregate, not the literal amount of the single most recent
+    payment — callers must label it "TTM dividend" and not "last dividend
+    paid".
+
+    FCF, cash and total debt are NOT here: no field on this snapshot call
+    carries them, and the SDK method that might
+    (`get_financials_statements`) has never been wrapped, called, or
+    entitlement-checked by this codebase.
+    """
+    market = market_hours.market_of(code)
+    try:
+        rows = gateway.get_snapshot([code])
+    except GatewayError as exc:
+        if _is_not_entitled(exc):
+            raise NotEntitledError(code, market, str(exc)) from exc
+        raise
+
+    if not rows:
+        raise ValueError(f"no snapshot returned for {code}")
+    row = rows[0]
+
+    dividend_ttm = indicators._f(row.get("dividend_ttm"))
+    if dividend_ttm is None:
+        dividend_ttm = indicators._f(row.get("dividend_lfy"))
+
+    return {
+        "code": code,
+        "market": market,
+        "available": True,
+        "reason": None,
+        "is_delayed_data": market_hours.is_delayed_data(market),
+        "data_as_of": market_hours.data_as_of(market).isoformat(),
+        "last_price": indicators._f(row.get("last_price")),
+        "outstanding_shares": indicators._f(row.get("outstanding_shares")),
+        "net_asset_per_share": indicators._f(row.get("net_asset_per_share")),
+        "dividend_ttm": dividend_ttm,
+    }
+
+
 # --- day movers --------------------------------------------------------
 
 def _change_pct(last: float | None, prev: float | None) -> float | None:

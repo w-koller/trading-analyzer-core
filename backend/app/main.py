@@ -27,7 +27,7 @@ from app.db import init_db, migrate_schema, reconcile_interrupted_runs
 from app.routers import (
     alerts, app_settings, auth, chat, earnings, health, market, news,
     outcomes, positions, push, scan,
-    sectors, signals, setups, watchlist,
+    sectors, signals, setups, valuation, watchlist,
 )
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.startup_check import run_startup_checks
@@ -117,3 +117,4 @@ app.include_router(alerts.router, dependencies=_guarded)
 app.include_router(signals.router, dependencies=_guarded)
 app.include_router(sectors.router, dependencies=_guarded)
 app.include_router(push.router, dependencies=_guarded)
+app.include_router(valuation.router, dependencies=_guarded)

@@ -291,4 +291,85 @@ check("a zero prev_close yields None, not a division error",
       market_data._change_pct(10.0, 0.0) is None)
 check("a missing last price yields None", market_data._change_pct(None, 100.0) is None)
 
+# --- fundamentals: fields the movers path already fetches and discards -----
+fund_snap = {
+    "US.F": {
+        "code": "US.F", "last_price": 142.35,
+        "outstanding_shares": 1_000_000.0,
+        "net_asset_per_share": 38.2,
+        "dividend_ttm": 2.4, "dividend_lfy": 2.2,
+    },
+    # No TTM figure on record — must fall back to the last-fiscal-year one
+    # rather than reporting no dividend at all.
+    "US.G": {
+        "code": "US.G", "last_price": 55.0,
+        "outstanding_shares": 500_000.0,
+        "net_asset_per_share": 10.0,
+        "dividend_lfy": 1.1,
+    },
+    # A field genuinely absent from the row, not just zero — _f must degrade
+    # it to None rather than raising a KeyError.
+    "US.H": {"code": "US.H", "last_price": 20.0},
+}
+
+f = market_data.get_fundamentals(FakeGateway(snapshots=fund_snap), "US.F")
+fund_fields = ("last_price", "outstanding_shares", "net_asset_per_share", "dividend_ttm")
+check("every fetched field is populated when the snapshot carries it",
+      (f["last_price"], f["outstanding_shares"], f["net_asset_per_share"], f["dividend_ttm"])
+      == (142.35, 1_000_000.0, 38.2, 2.4),
+      str({k: f[k] for k in fund_fields}))
+check("TTM dividend is preferred over LFY when both are present",
+      f["dividend_ttm"] == 2.4, f["dividend_ttm"])
+
+g = market_data.get_fundamentals(FakeGateway(snapshots=fund_snap), "US.G")
+check("a missing TTM dividend falls back to last-fiscal-year",
+      g["dividend_ttm"] == 1.1, g["dividend_ttm"])
+
+h = market_data.get_fundamentals(FakeGateway(snapshots=fund_snap), "US.H")
+check("a field absent from the row degrades to None, not a KeyError",
+      h["outstanding_shares"] is None and h["net_asset_per_share"] is None
+      and h["dividend_ttm"] is None,
+      str({k: h[k] for k in ("outstanding_shares", "net_asset_per_share", "dividend_ttm")}))
+check("the success shape carries available/is_delayed_data/data_as_of too",
+      f["available"] is True and f["reason"] is None and f["data_as_of"] is not None,
+      f"available={f.get('available')} reason={f.get('reason')!r}")
+
+
+class FailingSnapshotGateway:
+    def __init__(self, exc):
+        self._exc = exc
+
+    def get_snapshot(self, codes):
+        raise self._exc
+
+
+try:
+    market_data.get_fundamentals(
+        FailingSnapshotGateway(
+            GatewayError("request_snapshot returned error: Unsupported quote market.")
+        ),
+        "AU.CSL",
+    )
+    fund_raised = None
+except Exception as exc:  # noqa: BLE001
+    fund_raised = exc
+
+check("an unentitled market raises NotEntitledError here too, not GatewayError",
+      isinstance(fund_raised, market_data.NotEntitledError),
+      f"{type(fund_raised).__name__}: {fund_raised}")
+
+try:
+    market_data.get_fundamentals(
+        FailingSnapshotGateway(GatewayError("request_snapshot timed out after 45s")),
+        "US.PLTR",
+    )
+    fund_raised2 = None
+except Exception as exc:  # noqa: BLE001
+    fund_raised2 = exc
+
+check("a real gateway fault on the fundamentals path stays a GatewayError",
+      isinstance(fund_raised2, GatewayError)
+      and not isinstance(fund_raised2, market_data.NotEntitledError),
+      f"{type(fund_raised2).__name__}: {fund_raised2}")
+
 report("market_data")

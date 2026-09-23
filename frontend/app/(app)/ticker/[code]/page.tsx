@@ -1,7 +1,8 @@
 "use client";
 
-import { use } from "react";
+import { Suspense, use } from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, Radar } from "lucide-react";
 import { NextEarnings } from "@/components/ticker/next-earnings";
@@ -12,6 +13,7 @@ import { SetupCard } from "@/components/setup-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { PillGroup } from "@/components/ui/pill-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   ChangeBadge,
@@ -20,16 +22,47 @@ import {
   HoldingBadge,
 } from "@/components/market/indicators";
 import { GlossaryTerm } from "@/components/glossary-term";
+import { ValuationPanel } from "@/components/valuation/valuation-panel";
 import { api } from "@/lib/api";
 import { useHoldings } from "@/lib/holdings";
 import { bareTicker, marketOf, num, pct, timeAgo } from "@/lib/format";
 
+type View = "overview" | "valuation";
+const VIEWS: { value: View; label: string }[] = [
+  { value: "overview", label: "Overview" },
+  { value: "valuation", label: "Valuation" },
+];
+
 export default function TickerPage({ params }: { params: Promise<{ code: string }> }) {
+  return (
+    <Suspense fallback={<Skeleton className="h-96 w-full" />}>
+      <TickerView params={params} />
+    </Suspense>
+  );
+}
+
+function TickerView({ params }: { params: Promise<{ code: string }> }) {
   const { code: raw } = use(params);
   const code = decodeURIComponent(raw);
   const queryClient = useQueryClient();
   const { positions, available } = useHoldings();
   const position = positions.find((p) => p.code === code);
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const view: View = searchParams.get("view") === "valuation" ? "valuation" : "overview";
+
+  // Preserves every other param, same reasoning as setups/page.tsx: this
+  // page has none of its own yet, but the valuation tab's own `?model=` must
+  // survive a switch back and forth just the same.
+  const selectView = (next: View) => {
+    const q = new URLSearchParams(searchParams.toString());
+    if (next === "overview") q.delete("view");
+    else q.set("view", next);
+    const query = q.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
 
   const klines = useQuery({
     queryKey: ["klines", code],
@@ -102,6 +135,14 @@ export default function TickerPage({ params }: { params: Promise<{ code: string 
         </div>
       </div>
 
+      <div className="mb-4">
+        <PillGroup options={VIEWS} value={view} onChange={selectView} ariaLabel="Ticker views" />
+      </div>
+
+      {view === "valuation" ? (
+        <ValuationPanel code={code} quote={quote} />
+      ) : (
+        <>
       {scan.isPending && (
         <p className="mb-3 rounded-md border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
           Generating a thesis with the local model — this takes 1-2 minutes.
@@ -233,6 +274,8 @@ export default function TickerPage({ params }: { params: Promise<{ code: string 
       <ThesisHistory code={code} className="mt-4" />
 
       <TickerChat code={code} className="mt-4" />
+        </>
+      )}
     </>
   );
 }

@@ -377,6 +377,55 @@ export type KlinesResponse = {
 };
 
 
+/**
+ * Fields the snapshot call already fetches on every scan and every movers
+ * refresh, and every existing caller discards — see `market_data.py`'s
+ * `get_fundamentals`. `net_asset_per_share` is Moomoo's OWN computed book
+ * value/share, shown as a reference, not decomposed into assets/liabilities.
+ * `dividend_ttm` is a trailing-twelve-month aggregate, not the amount of the
+ * single most recent payment — label it that way, not "last dividend paid".
+ */
+export type Fundamentals = {
+  code: string;
+  market: string;
+  available: boolean;
+  reason: string | null;
+  is_delayed_data: boolean;
+  data_as_of: string | null;
+  last_price: number | null;
+  outstanding_shares: number | null;
+  net_asset_per_share: number | null;
+  dividend_ttm: number | null;
+};
+
+export type ValuationModelKind = "dcf" | "ggm" | "nav";
+
+export type ValuationComputed = {
+  intrinsic_value: number;
+  verdict: "undervalued" | "fair" | "overvalued";
+  market_price: number;
+  target_buy_price: number;
+  upside_pct: number;
+  sensitivity_min?: number | null;
+  sensitivity_max?: number | null;
+};
+
+export type ValuationInterpretRequest = {
+  model_kind: ValuationModelKind;
+  dcf_inputs?: Record<string, number> | null;
+  ggm_inputs?: Record<string, number> | null;
+  nav_inputs?: Record<string, number> | null;
+  computed: ValuationComputed;
+};
+
+export type ValuationInterpretation = {
+  code: string;
+  model_kind: ValuationModelKind;
+  model: string;
+  summary: string;
+  sensitivity_note: string;
+};
+
 export type AlertSeverity = "critical" | "warn" | "info";
 
 export type PositionAlert = {
@@ -707,6 +756,14 @@ export const api = {
   positions: (market?: string) => get<PositionsResponse>(`/positions${qs({ market })}`),
   klines: (code: string, days?: number) =>
     get<KlinesResponse>(`/market/${encodeURIComponent(code)}/klines${qs({ days })}`),
+  fundamentals: (code: string) =>
+    get<Fundamentals>(`/market/${encodeURIComponent(code)}/fundamentals`),
+  // No client timeout — same reasoning as runScan. A local generation
+  // legitimately takes 30-120s, and this button is meant to be waited on.
+  interpretValuation: (code: string, payload: ValuationInterpretRequest) =>
+    post<ValuationInterpretation>(
+      `/valuation/${encodeURIComponent(code)}/interpret`, payload, null,
+    ),
   scanStatus: () => get<ScanStatus>("/scan/status"),
   news: (opts: { category?: NewsCategory; code?: string; limit?: number; sinceHours?: number } = {}) =>
     get<NewsResponse>(

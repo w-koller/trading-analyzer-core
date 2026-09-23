@@ -76,3 +76,36 @@ async def klines(code: str, days: int = market_data.KLINE_LOOKBACK_DAYS):
         # above is the entire point of the change.
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return payload
+
+
+@router.get("/{code}/fundamentals")
+async def fundamentals(code: str):
+    """Shares outstanding, book value/share and TTM dividend for one ticker.
+
+    Same entitlement-degrade contract as `/klines`: an account with no
+    market-data right for this market gets a 200 with `available: false`,
+    not a 502, because there is nothing to retry.
+    """
+    try:
+        payload = await run_in_threadpool(
+            market_data.get_fundamentals, get_gateway(), code
+        )
+    except market_data.NotEntitledError as exc:
+        return {
+            "code": code,
+            "market": exc.market,
+            "available": False,
+            "reason": str(exc),
+            "gateway_detail": exc.detail,
+            "is_delayed_data": market_hours.is_delayed_data(exc.market),
+            "data_as_of": None,
+            "last_price": None,
+            "outstanding_shares": None,
+            "net_asset_per_share": None,
+            "dividend_ttm": None,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return payload
