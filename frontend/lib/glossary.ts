@@ -155,17 +155,15 @@ export const GLOSSARY: Record<string, GlossaryEntry> = {
   suggested_entry: {
     term: "Suggested entry",
     short:
-      "Where the model would want to be filled, which is not always the current price — a setup can be worth waiting for a pullback to, or worth taking only once a level has broken. An entry shown as at market means the model read the setup as worth acting on at the last close. Advisory only — nothing here places or manages an order.",
+      "Where the model would want to be filled, which is not always the current price — a setup can be worth waiting for a pullback to, or worth taking only once a level has broken. An entry shown as at market means the model read the setup as worth acting on at the last close.",
   },
   suggested_stop: {
     term: "Suggested stop",
-    short:
-      "Where the model would abandon the idea. Advisory only — nothing here places or manages an order.",
+    short: "Where the model would abandon the idea.",
   },
   suggested_target: {
     term: "Suggested target",
-    short:
-      "Where the model would take profit. Advisory only — nothing here places or manages an order.",
+    short: "Where the model would take profit.",
   },
   risk_reward: {
     term: "Risk / reward",
