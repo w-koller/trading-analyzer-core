@@ -404,6 +404,18 @@ GLOSSARY.margin_of_safety = {
     "A bigger margin protects against a too-optimistic growth or discount-rate assumption, at the cost of a stricter (and rarer) buy signal.",
 };
 
+GLOSSARY.volatility_cone = {
+  term: "Statistical price range",
+  short:
+    "A likely range for the price over the next few months, based on how much it has moved recently — not a prediction of which way it'll go.",
+};
+
+GLOSSARY.seasonality = {
+  term: "Seasonality",
+  short:
+    "How this ticker has typically performed in each calendar month, based on its own price history.",
+};
+
 export function glossaryEntry(key: string): GlossaryEntry | undefined {
   return GLOSSARY[key];
 }
