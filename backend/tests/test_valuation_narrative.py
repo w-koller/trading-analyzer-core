@@ -110,16 +110,16 @@ rejects("a fabricated percentage is rejected",
         "not one of the numbers")
 
 check("a number that matches a given figure within rounding is accepted",
-      vn._first_ungrounded_number("about $142 a share", ALLOWED) is None,
+      vn.first_ungrounded_number("about $142 a share", ALLOWED) is None,
       "142 vs the given 142.35 is well inside a rounding tolerance")
 check("a given figure quoted exactly is accepted",
-      vn._first_ungrounded_number("$120.00 market price", ALLOWED) is None)
+      vn.first_ungrounded_number("$120.00 market price", ALLOWED) is None)
 check("small integers read as year/count labels, not fabricated figures",
-      vn._first_ungrounded_number("in year 3 of the forecast", ALLOWED) is None)
+      vn.first_ungrounded_number("in year 3 of the forecast", ALLOWED) is None)
 check("100 reads as a percent base, not a fabricated figure",
-      vn._first_ungrounded_number("scaled against 100", ALLOWED) is None)
+      vn.first_ungrounded_number("scaled against 100", ALLOWED) is None)
 check("an unrelated large number is still caught",
-      vn._first_ungrounded_number("a $50000 valuation", ALLOWED) is not None)
+      vn.first_ungrounded_number("a $50000 valuation", ALLOWED) is not None)
 
 
 # --- the prompt actually carries the given numbers --------------------------

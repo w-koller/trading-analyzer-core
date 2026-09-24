@@ -95,7 +95,11 @@ class ValuationNarrativeValidationError(ValuationNarrativeError):
 _NUMBER_RE = re.compile(r"-?\$?\d[\d,]*(?:\.\d+)?%?")
 
 
-def _extract_numbers(text: str) -> list[float]:
+def extract_numbers(text: str) -> list[float]:
+    """Public — cloud's advisor_narrative.py imports this rather than
+    duplicating it, the same cloud #28e precedent `hydrate_setup` set: a
+    private name imported across a package boundary is the worst of both
+    worlds."""
     out: list[float] = []
     for m in _NUMBER_RE.finditer(text):
         token = m.group(0).replace("$", "").replace(",", "").replace("%", "")
@@ -125,8 +129,9 @@ def collect_numbers(*sources: dict[str, Any]) -> list[float]:
     return out
 
 
-def _first_ungrounded_number(text: str, allowed: list[float]) -> str | None:
-    for n in _extract_numbers(text):
+def first_ungrounded_number(text: str, allowed: list[float]) -> str | None:
+    """Public for the same reason `extract_numbers` above is."""
+    for n in extract_numbers(text):
         if _is_always_allowed(n):
             continue
         if any(abs(n - a) <= max(abs(a) * 0.02, 0.5) for a in allowed):
@@ -188,7 +193,7 @@ def validate_interpretation(
         )
 
     for field, text in (("summary", summary), ("sensitivity_note", note)):
-        bad = _first_ungrounded_number(text, allowed_numbers)
+        bad = first_ungrounded_number(text, allowed_numbers)
         if bad is not None:
             raise ValuationNarrativeValidationError(
                 f"{field} mentions {bad!r}, which is not one of the numbers "
