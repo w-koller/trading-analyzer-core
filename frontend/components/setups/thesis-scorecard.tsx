@@ -77,9 +77,15 @@ function Summary({ data }: { data: ScorecardResponse }) {
     onMutate: () => setNote(null),
     onSuccess: (result) => {
       setNote({
+        // `remaining` is the honest half: a run that hit its own limit has
+        // left work behind, and staying quiet about that is how the long
+        // horizons stalled unnoticed for three weeks.
         text:
           result.scored > 0
-            ? `Scored ${result.scored} thesis${result.scored === 1 ? "" : "es"}.`
+            ? `Scored ${result.scored} thesis${result.scored === 1 ? "" : "es"}.` +
+              (result.remaining > 0
+                ? ` ${result.remaining} still waiting — run it again.`
+                : "")
             : "Nothing new to score — every thesis whose horizon has passed is already measured.",
         failed: false,
       });
@@ -197,9 +203,19 @@ function HorizonCard({ horizon, data }: { horizon: number; data: ScorecardRespon
         // many bars exist after a thesis, so on a young corpus the long
         // horizons are legitimately unknowable and saying "no results" would
         // read as a bug or as a model that never gets scored.
+        //
+        // The corpus span is printed BESIDE that claim, because for three
+        // weeks the claim was false and nothing on the page could show it: a
+        // selection bug froze every thesis at horizon 1, and this card went
+        // on saying "no thesis is old enough" about a horizon of 3 while the
+        // corpus ran to 19 scored trading days. The two numbers together are
+        // checkable in a glance; the sentence alone was not. Stating the
+        // evidence rather than adjudicating it is #69b's rule, and it cannot
+        // cry wolf the way a threshold would.
         <Empty>
           No thesis is old enough yet — this horizon needs {horizon} trading days
-          of bars after a thesis was written.
+          of bars after a thesis was written. The corpus spans{" "}
+          {data.distinct_days} scored trading day{data.distinct_days === 1 ? "" : "s"} so far.
         </Empty>
       ) : (
         <Buckets rows={rows} data={data} />

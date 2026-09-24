@@ -223,4 +223,202 @@ check_eq("bucket_for_conviction: high end of the 7-10 bucket", sc.bucket_for_con
 check_eq("bucket_for_conviction: below every bucket falls through",
         sc.bucket_for_conviction(0), "?")
 
+# --- run_scoring: the per-horizon selection -----------------------------
+# THE defect this file exists to stop recurring. The old selector anti-joined
+# per SETUP (`LEFT JOIN setup_scores ... WHERE sc.id IS NULL`), not per
+# (setup, horizon). A thesis written at 21:00 and scored an hour later has
+# exactly ONE forward bar, so horizon 1 is the only row it can produce — and
+# that row then read as "this setup is done". On the live corpus 2,688 of
+# 2,691 scored theses sat frozen at horizon 1, and 5/10/20 were empty against
+# bars that could have answered 2,005 and 892 of them.
+#
+# `get_cached_bars` is replaced rather than driven through a fake gateway, so
+# this stays offline AND sidesteps the module-level kline cache's TTL, which
+# would otherwise serve run two the bars run one saw.
+_frames: dict[str, pd.DataFrame] = {}
+sc.market_data.get_cached_bars = lambda gw, code, *a, **k: _frames.get(code)
+
+_TODAY = db.now_iso()[:10]
+
+
+def seed_unscored(sid, code, direction="Bullish", conviction=5, spot=100.0,
+                  last_bar="2026-06-01 00:00:00",
+                  created_at="2026-06-01T21:00:00+00:00"):
+    """A thesis in the DB with a real snapshot and NO score rows."""
+    snap = json.dumps({"spot": spot, "last_bar_time": last_bar,
+                       "indicators": {"close": spot}})
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO watchlist_cache "
+            "(code, name, market, enabled, last_synced_at, updated_at) "
+            "VALUES (?, ?, 'US', 1, ?, ?)", (code, code, created_at, created_at))
+        conn.execute(
+            """INSERT INTO trade_setups
+               (id, scanner_run_id, code, market, created_at, data_as_of,
+                is_delayed_data, indicator_snapshot, feature_vector,
+                trade_direction, conviction_score, reasoning, similar_setup_ids)
+               VALUES (?, NULL, ?, 'US', ?, ?, 0, ?, '[]', ?, ?,
+                       'One. Two. Three.', '[]')""",
+            (sid, code, created_at, created_at, snap, direction, conviction))
+
+
+def stored(sid):
+    with db.get_connection() as conn:
+        return {r[0]: r[1] for r in conn.execute(
+            "SELECT horizon_days, scored_at FROM setup_scores WHERE setup_id = ?",
+            (sid,))}
+
+
+def backdate(sid, when="2026-06-02T22:00:00+00:00"):
+    """Pretend this setup was last scored on an earlier day.
+
+    The selector skips anything already visited today, so without this a
+    second run inside the same day is a no-op — which is the intended
+    behaviour, and the reason the test has to move the clock rather than
+    just call run_scoring twice.
+    """
+    with db.get_connection() as conn:
+        conn.execute("UPDATE setup_scores SET scored_at = ? WHERE setup_id = ?",
+                     (when, sid))
+
+
+# Night one: the thesis saw the 06-01 bar and exactly one bar has closed since.
+seed_unscored(5001, "US.RS")
+_frames["US.RS"] = bars([100.0, 101.0])
+sc.run_scoring(None)
+check_eq("night one, with one forward bar, writes horizon 1 and nothing else",
+         sorted(stored(5001)), [1])
+
+# Ten more bars arrive. Under the old selector this setup was already invisible
+# and 3/5/10 could never be written, however many bars turned up.
+backdate(5001)
+# Read AFTER backdating, so the run is the only thing that could move it.
+first_scored_at = stored(5001)[1]
+_frames["US.RS"] = bars([100.0] + [100.0 + i for i in range(1, 12)])
+result = sc.run_scoring(None)
+check_eq("later, the SAME setup gains every horizon the bars now answer",
+         sorted(stored(5001)), [1, 3, 5, 10])
+check("...and horizon 20 still is not written — 11 forward bars cannot answer it",
+      20 not in stored(5001),
+      "'not yet knowable' and 'knowable and wrong' must never share a spelling")
+check("the horizon 1 row is left exactly as it was",
+      stored(5001)[1] == first_scored_at,
+      "fill-missing, never rewrite: a forward-adjusted feed re-writes history "
+      "after a split, and re-scoring would pair a frozen entry against "
+      "re-adjusted exits")
+check("the run reports what it wrote, per horizon",
+      result["by_horizon"][3] == 1 and result["by_horizon"][5] == 1
+      and result["by_horizon"][20] == 0,
+      str(result["by_horizon"]))
+
+# A setup holding all of HORIZONS drops out of the working set for good.
+seed_unscored(5002, "US.RT")
+_frames["US.RT"] = bars([100.0] + [100.0 + i for i in range(1, 25)])
+sc.run_scoring(None)
+check_eq("24 forward bars answer every horizon at once",
+         sorted(stored(5002)), list(sc.HORIZONS))
+backdate(5002)
+page, _ = sc._setups_needing_scores(10_000, _TODAY)
+check("a setup with every horizon stored is never selected again",
+      all(s["id"] != 5002 for s, _ in page),
+      "otherwise the job re-walks the whole corpus forever")
+
+# The page carries the horizons each setup already holds, so run_scoring can
+# skip them without a second query per setup.
+backdate(5001)
+page, _ = sc._setups_needing_scores(10_000, _TODAY)
+carried = [done for s, done in page if s["id"] == 5001]
+check_eq("each candidate arrives with the horizons it already holds",
+         carried, [{1, 3, 5, 10}])
+
+# `remaining` is the signal that would have caught this in a day. Two more
+# candidates, because `seed()` stamps scored_at with now_iso() and the
+# visited-today guard had left exactly one setup for a limit of 1 to reach.
+seed_unscored(5003, "US.RU")
+seed_unscored(5004, "US.RV")
+page, remaining = sc._setups_needing_scores(1, _TODAY)
+check("a truncated page reports the candidates it did not reach",
+      len(page) == 1 and remaining > 0,
+      f"page={len(page)} remaining={remaining} — non-zero on a scheduled run "
+      "means scoring is falling behind")
+page, remaining = sc._setups_needing_scores(10_000, _TODAY)
+check_eq("a page that reached everything reports nothing remaining", remaining, 0)
+
+# Coverage, so the UI can tell "not knowable yet" from "scoring is behind".
+card = sc.scorecard()
+check("the response reports how many theses each horizon has scored",
+      card["setups_by_horizon"][20] == 1 and card["setups_by_horizon"][1] > 1,
+      str(card["setups_by_horizon"]))
+
+
+# --- a Neutral bucket can be sufficient ---------------------------------
+# `sufficient` used to count only rows with a non-null directional_hit, which
+# is all of a directional bucket and NONE of a Neutral one — so Neutral was
+# permanently insufficient however large it grew, and both UIs printed
+# "below 20/20" beside a sample count in the hundreds.
+for d in range(sc.MIN_DISTINCT_DAYS + 2):
+    for t in range(2):
+        seed(3000 + d * 10 + t, f"US.NN{t}", "Neutral", 3,
+             f"2026-09-{d + 1:02d}T10:00:00+00:00", None, 2.0)
+card = sc.scorecard()
+wide = [b for b in card["buckets"]
+        if b["direction"] == "Neutral" and b["conviction_bucket"] == "1-4"][0]
+check("a Neutral bucket with the breadth to back it reads as sufficient",
+      wide["sufficient"] is True,
+      f"n={wide['samples']} days={wide['distinct_days']} — the shortfall copy "
+      "must not contradict the sample count printed beside it")
+check("...while still carrying no hit rate",
+      wide["hit_rate"] is None,
+      "sufficiency is about the evidence, not about inventing a direction")
+
+
+# --- guard #4: a bar is not an exit until its session has closed --------
+# Learned in production. The cloud provider adapts Twelve Data's exclusive
+# `end_date` so that `end = today` INCLUDES today -- correct for a scan
+# reading the current price, wrong for a scorecard reading a settled exit.
+# A backfill run at 12:05 ET wrote 899 rows whose window closed on that day's
+# forming bar: the "close" was the price at the moment of asking, and
+# `_resolution` scanned a high/low that was still moving, so a target touched
+# at 15:00 read as never touched. Every one of them wrong in the same
+# direction, because they shared one half-day of market.
+US_CLOSE_UTC = 20                      # 16:00 America/New_York in June (EDT)
+day = "2026-06-01"                     # a Monday
+frame_today = bars([100.0, 110.0], start=day)   # 06-01, 06-02
+
+mid = datetime(2026, 6, 2, US_CLOSE_UTC - 3, 0, tzinfo=timezone.utc)
+check_eq("mid-session, the forming bar is not an exit",
+         len(sc._settled_bars(frame_today, "US.A", now=mid)), 1)
+after = datetime(2026, 6, 2, US_CLOSE_UTC + 1, 0, tzinfo=timezone.utc)
+check_eq("once the session closes, the same bar counts",
+         len(sc._settled_bars(frame_today, "US.A", now=after)), 2)
+at_close = datetime(2026, 6, 2, US_CLOSE_UTC, 0, tzinfo=timezone.utc)
+check_eq("the close itself settles the bar, not a minute later",
+         len(sc._settled_bars(frame_today, "US.A", now=at_close)), 2)
+check_eq("bars from earlier days are never trimmed",
+         len(sc._settled_bars(bars([1.0, 2.0, 3.0], start="2026-05-01"),
+                              "US.A", now=mid)), 3)
+check("an unmodelled market is left alone rather than guessed at",
+      len(sc._settled_bars(frame_today, "ZZ.A", now=mid)) == 2,
+      "refusing to invent a close beats inventing one")
+
+# And the wiring: run_scoring must never hand score_setup an unsettled bar.
+# Dated far enough ahead that this holds whenever the suite runs, rather than
+# depending on whether the market happens to be open right now.
+seed_unscored(5010, "US.RW", last_bar="2026-06-01 00:00:00",
+              created_at="2026-06-01T21:00:00+00:00")
+_frames["US.RW"] = pd.DataFrame({
+    "time_key": ["2026-06-01 00:00:00", "2026-06-02 00:00:00", "2099-01-01 00:00:00"],
+    "open": [100.0, 110.0, 999.0], "high": [101.0, 111.0, 999.0],
+    "low": [99.0, 109.0, 999.0], "close": [100.0, 110.0, 999.0],
+    "volume": [1000, 1000, 1000],
+})
+sc.run_scoring(None)
+with db.get_connection() as conn:
+    exits = [r[0] for r in conn.execute(
+        "SELECT exit_price FROM setup_scores WHERE setup_id = 5010", ())]
+check("run_scoring never scores against a session that has not closed",
+      exits and 999.0 not in exits,
+      f"exits={exits} — 999.0 would mean the unsettled bar became an exit")
+
+
 report("thesis scorecard")

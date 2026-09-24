@@ -750,7 +750,15 @@ def _run_thesis_scoring() -> None:
     it reads the same `market_data` kline cache the scanner keeps warm), and
     #44 defines that lock as strictly OpenD's mutex. Daily, so a skipped tick
     costs nothing: a thesis whose 5-day horizon resolved today is just as
-    scoreable tomorrow, and `_unscored_setups` picks up whatever was missed.
+    scoreable tomorrow, and `_setups_needing_scores` picks up whatever was
+    missed.
+
+    That last clause was a promise the code did not keep until 2026-09-23.
+    The selector it names was `_unscored_setups`, which excluded a setup once
+    it held ANY score row rather than once it held all of them — so a thesis
+    scored the night it was written was frozen at horizon 1 forever and the
+    longer horizons never filled. The job is only worth running daily because
+    the selection is per (setup, horizon); see that function's docstring.
     """
     global _last_scoring
     result = _guarded_job(

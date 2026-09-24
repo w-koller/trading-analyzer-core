@@ -12,7 +12,7 @@ klines the scanner already caches contain what happened next. So the model's
 DIRECTIONAL record — did a Bullish call precede an up move — is measurable
 right now, retroactively, over the whole corpus.
 
-Three things here are easy to get wrong in ways that produce
+Four things here are easy to get wrong in ways that produce
 plausible-looking numbers instead of an error, which is the worst failure
 mode a measurement can have. Each is pinned by a test:
 
@@ -34,6 +34,13 @@ mode a measurement can have. Each is pinned by a test:
    observations. Counting them individually inflates the denominator ~30x
    and manufactures confidence intervals out of nothing.
 
+4. **A bar is not an exit until its session has closed.** Asked mid-session
+   the provider returns today's FORMING bar, whose "close" is merely the
+   price at the moment of asking and whose high/low are still moving. The
+   nightly job runs after the close and never saw this; "Score now" is a
+   button, and a click at 12:05 ET wrote 899 such rows before the guard
+   existed. See `_settled_bars`.
+
 Neutral theses are excluded from hit rate entirely. They make no directional
 claim, so scoring them either way would invent a prediction the thesis did
 not make.
@@ -43,7 +50,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -128,6 +137,64 @@ def _future_bars(
     return bars[mask]
 
 
+def _settled_bars(
+    bars: pd.DataFrame, code: str, now: datetime | None = None,
+) -> pd.DataFrame:
+    """Bars whose own session has actually closed.
+
+    Guard #4, and it was learned the hard way on 2026-09-23. A daily bar is
+    not a fact until its session ends: asked mid-session, the cloud provider
+    returns today's FORMING bar, and it does so deliberately — it adapts
+    Twelve Data's exclusive `end_date` precisely so that `end = today`
+    includes today, which is right for a scan reading the current price and
+    wrong for a scorecard reading a settled exit.
+
+    Scoring against a forming bar takes the price at the moment you asked and
+    records it as the close. `_resolution` is worse: it scans a high/low that
+    is still moving, so a stop or target touched after you looked is recorded
+    as never touched. Both produce a plausible number rather than an error —
+    the failure this module's docstring calls the worst available — and both
+    are CORRELATED, because every ticker scored in one mid-session run shares
+    the same half-day of market.
+
+    Measured: a manual backfill run at 12:05 ET wrote 5,585 rows of which 899
+    closed on that day's forming bar. They were deleted and re-scored after
+    the close rather than kept.
+
+    The nightly job never hit this, running an hour after the post-close scan.
+    The "Score now" button hits it on any click during market hours, which is
+    a supported action on a page whose entire job is not to over-claim.
+
+    Trailing-only, because bars arrive chronologically: the walk stops at the
+    first settled bar. Returns the frame untouched for a market this project
+    does not model, which is the same choice `next_regular_close` makes —
+    refusing to guess beats inventing a close.
+    """
+    market = market_hours.market_of(code)
+    tz = market_hours.MARKET_TZ.get(market)
+    hours = market_hours.MARKET_HOURS.get(market)
+    if tz is None or hours is None or "time_key" not in bars.columns:
+        return bars
+    now = now or datetime.now(timezone.utc)
+
+    drop = 0
+    for i in range(len(bars) - 1, -1, -1):
+        stamp = market_hours.parse_bar_time(bars["time_key"].iloc[i])
+        if stamp is None:
+            break
+        # The time_key names a TRADING DATE and parses to UTC midnight of it;
+        # converting that to exchange-local time would move it to the previous
+        # evening and ask about the wrong day. Take the date as given and pair
+        # it with the market's own regular close (MARKET_HOURS[m][2], the same
+        # element cloud's scheduler derives its post-close time from).
+        closes_at = datetime.combine(
+            stamp.date(), hours[2], tzinfo=tz).astimezone(timezone.utc)
+        if closes_at <= now:
+            break                         # settled, and so is everything before
+        drop += 1
+    return bars.iloc[:len(bars) - drop] if drop else bars
+
+
 def _resolution(
     future: pd.DataFrame, direction: str, stop: float | None, target: float | None,
 ) -> str | None:
@@ -157,6 +224,7 @@ def _resolution(
 
 def score_setup(
     setup: dict[str, Any], bars: pd.DataFrame, times: pd.Series | None = None,
+    skip_horizons: Collection[int] = (),
 ) -> list[SetupScore]:
     """Score one stored thesis against the bars that followed it.
 
@@ -167,7 +235,20 @@ def score_setup(
 
     `times` is an optional `parse_bar_times(bars)`, for a caller scoring many
     setups against one frame. Omitted, the parse happens here as before.
+
+    `skip_horizons` are horizons this setup already has a stored row for, and
+    they are not recomputed. FILL-MISSING, never rewrite: `entry_price` is the
+    spot the thesis saw, frozen at thesis time, while `exit_price` would come
+    from bars fetched now — and on a forward-adjusted feed (decisions #7) a
+    split rewrites history, so recomputing an old horizon would quietly pair
+    a stale entry against re-adjusted exits and change a measured result that
+    nothing asked to change. `save_scores` stays an upsert, so a deliberate
+    re-score is still one call away; it just is not what the nightly job does.
     """
+    wanted = [h for h in HORIZONS if h not in skip_horizons]
+    if not wanted:
+        return []                         # nothing left to measure
+
     snapshot = setup.get("indicator_snapshot")
     if isinstance(snapshot, str):
         try:
@@ -190,7 +271,7 @@ def score_setup(
     stop, target = setup.get("suggested_stop"), setup.get("suggested_target")
 
     out: list[SetupScore] = []
-    for horizon in HORIZONS:
+    for horizon in wanted:
         if len(future) < horizon:
             continue                      # not yet knowable — emit nothing
         window = future.iloc[:horizon]
@@ -245,46 +326,140 @@ def save_scores(scores: list[SetupScore]) -> int:
     return len(scores)
 
 
-def _unscored_setups(limit: int) -> list[dict[str, Any]]:
-    """Theses with no score row yet, oldest first.
+#: HORIZONS as a SQL list literal, derived rather than typed out so the query
+#: below can never drift from the tuple it is testing against.
+_HORIZON_LIST_SQL = ", ".join(str(h) for h in HORIZONS)
 
-    Oldest first because those are the ones whose future has actually
-    happened; a thesis from ten minutes ago has nothing to score against.
+#: Per-setup scoring state: which of HORIZONS it holds, how many, and when it
+#: was last touched. Written once here because both the page and its COUNT
+#: need exactly the same predicate, and two spellings of one rule is one
+#: spelling too many.
+_SCORE_STATE_SQL = f"""
+    FROM trade_setups s
+    LEFT JOIN (
+        SELECT setup_id,
+               COUNT(DISTINCT CASE WHEN horizon_days IN ({_HORIZON_LIST_SQL})
+                                   THEN horizon_days END) AS n_horizons,
+               MAX(scored_at)             AS last_scored_at,
+               GROUP_CONCAT(horizon_days) AS horizons
+        FROM setup_scores
+        GROUP BY setup_id
+    ) sc ON sc.setup_id = s.id
+    WHERE COALESCE(sc.n_horizons, 0) < {len(HORIZONS)}
+      AND (sc.last_scored_at IS NULL OR sc.last_scored_at < ?)
+"""
+
+
+def _setups_needing_scores(
+    limit: int, today: str,
+) -> tuple[list[tuple[dict[str, Any], set[int]]], int]:
+    """Theses still missing at least one horizon, oldest first, each paired
+    with the horizons it already holds.
+
+    THE BUG THIS REPLACED, because it is worth stating in full. The old query
+    anti-joined per SETUP — `LEFT JOIN setup_scores ... WHERE sc.id IS NULL` —
+    not per (setup, horizon). A thesis written at 21:00 and scored an hour
+    later has exactly ONE forward bar, so `score_setup` correctly emits
+    horizon 1 and nothing else; that single row then read as "this setup is
+    done" and the setup was never looked at again. Its 3/5/10/20 rows could
+    not be written no matter how many bars arrived afterwards.
+
+    Measured on the live corpus the day this was found: 2,688 of 2,691 scored
+    theses were frozen at horizon 1, horizon 3 held 3 rows — all written on
+    the first run the job ever did — and 5/10/20 held none, against a corpus
+    with enough bars for 2,470 / 2,005 / 892 of them. Horizon 5 being empty
+    also meant `advisor.calibration_for_setup`, which reads exactly that
+    horizon, had returned None for every setup since the day it shipped.
+
+    It survived review because it looks right and because the symptom has an
+    innocent explanation that was true when it was written: a young corpus
+    genuinely cannot answer a 20-bar question. `save_scores` has always been
+    an upsert on (setup_id, horizon_days) and `_run_thesis_scoring`'s
+    docstring has always promised the missed rows get picked up later — the
+    rest of the module was built for this behaviour and only the selection
+    disagreed.
+
+    Oldest first, unchanged: those are the ones whose future has actually
+    happened. A setup already scored today is skipped, so hammering
+    `POST /signals/scorecard/run` re-walks nothing.
+
+    Deliberately NOT gated on elapsed time. Gating on `created_at` would be
+    wrong (forward bars start at `last_bar_time`, which trails it by up to
+    four days on a weekend thesis) and gating on `last_bar_time` would put
+    `json_extract` — the one JSON1 dependency in this codebase — on the path
+    of the whole job. A setup whose next horizon has not arrived yet costs one
+    slice and returns nothing, and the real cost of a run is the per-TICKER
+    bar fetch, which the caller's grouping already pays only once.
+
+    Returns the page and the number of candidates it did not reach. A nightly
+    run leaving anything behind is the signal that would have caught this in
+    a day rather than three weeks.
     """
     with db.get_connection() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) " + _SCORE_STATE_SQL, (today,),
+        ).fetchone()[0]
         rows = conn.execute(
-            """
-            SELECT s.* FROM trade_setups s
-            LEFT JOIN setup_scores sc ON sc.setup_id = s.id
-            WHERE sc.id IS NULL
-            ORDER BY s.created_at ASC
-            LIMIT ?
-            """,
-            (limit,),
+            "SELECT s.*, COALESCE(sc.horizons, '') AS _scored_horizons "
+            + _SCORE_STATE_SQL
+            + " ORDER BY s.created_at ASC LIMIT ?",
+            (today, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+
+    page: list[tuple[dict[str, Any], set[int]]] = []
+    for row in rows:
+        setup = dict(row)
+        raw = setup.pop("_scored_horizons", "") or ""
+        page.append((setup, {int(h) for h in raw.split(",") if h}))
+    return page, max(total - len(page), 0)
 
 
-def run_scoring(gateway, limit: int = 500) -> dict[str, Any]:
-    """Score unscored theses against cached bars. Never raises per ticker."""
-    pending = _unscored_setups(limit)
+#: A whole pass in one run, which is the point. The old 500 was set when a
+#: setup was visited exactly once ever; now that a setup is revisited until
+#: all five horizons are filled, the working set is every thesis younger than
+#: the longest horizon — about 20 trading days of rotation output. Truncating
+#: that silently is how the horizons stalled in the first place, so the budget
+#: is generous and `remaining` says out loud when it was not enough. The two
+#: routers keep their own 1..5000 interactive bound; this is the JOB's.
+SCHEDULED_LIMIT = 10_000
+
+
+def run_scoring(gateway, limit: int = SCHEDULED_LIMIT) -> dict[str, Any]:
+    """Fill in every horizon that has become answerable. Never raises per ticker.
+
+    Fill-missing, not re-score: a setup comes back on later runs until all of
+    HORIZONS is stored, and each run writes only the horizons it does not
+    already have. See `_setups_needing_scores` for why the previous
+    once-per-setup selection meant 3/5/10/20 could never be written at all.
+    """
+    today = db.now_iso()[:10]
+    pending, remaining = _setups_needing_scores(limit, today)
+    by_horizon = {h: 0 for h in HORIZONS}
     if not pending:
-        return {"considered": 0, "scored": 0, "rows": 0, "skipped": 0}
+        return {"considered": 0, "scored": 0, "rows": 0, "skipped": 0,
+                "remaining": remaining, "by_horizon": by_horizon}
 
-    by_code: dict[str, list[dict[str, Any]]] = {}
-    for s in pending:
-        by_code.setdefault(s["code"], []).append(s)
+    by_code: dict[str, list[tuple[dict[str, Any], set[int]]]] = {}
+    for setup, done in pending:
+        by_code.setdefault(setup["code"], []).append((setup, done))
 
     scored = rows = skipped = 0
-    for code, setups in by_code.items():
+    for code, entries in by_code.items():
         try:
             bars = market_data.get_cached_bars(gateway, code)
         except Exception as exc:
             logger.info("scorecard: no bars for %s (%s)", code, exc)
-            skipped += len(setups)
+            skipped += len(entries)
             continue
         if bars is None or bars.empty:
-            skipped += len(setups)
+            skipped += len(entries)
+            continue
+        # Guard #4, per ticker rather than inside `score_setup` — that one is
+        # documented pure, and giving it a wall clock would make every test
+        # frame's meaning depend on the day the suite runs.
+        bars = _settled_bars(bars, code)
+        if bars.empty:
+            skipped += len(entries)
             continue
         # Parsed once for the ticker, not once per thesis.
         times = parse_bar_times(bars)
@@ -294,16 +469,28 @@ def run_scoring(gateway, limit: int = 500) -> dict[str, Any]:
         # per-ticker rather than per-run, so the partial progress an early
         # failure leaves behind is unchanged.
         batch: list[SetupScore] = []
-        for setup in setups:
-            produced = score_setup(setup, bars, times)
+        for setup, done in entries:
+            produced = score_setup(setup, bars, times, skip_horizons=done)
             if produced:
                 batch.extend(produced)
                 scored += 1
         rows += save_scores(batch)
-    logger.info("scorecard: %d/%d setups scored, %d rows, %d skipped",
-                scored, len(pending), rows, skipped)
+        # Counted after the write, so a failed save is not reported as rows
+        # that exist. Per-horizon because a total cannot distinguish "the
+        # backfill worked" from "horizon 1 ran again, five times over".
+        for s in batch:
+            by_horizon[s.horizon_days] = by_horizon.get(s.horizon_days, 0) + 1
+    logger.info("scorecard: %d/%d setups scored, %d rows %s, %d skipped, "
+                "%d candidate(s) not reached",
+                scored, len(pending), rows,
+                {h: n for h, n in by_horizon.items() if n}, skipped, remaining)
     return {"considered": len(pending), "scored": scored, "rows": rows,
-            "skipped": skipped}
+            "skipped": skipped,
+            # Candidates the `limit` did not reach. Non-zero on a scheduled
+            # run means scoring is falling behind, which is exactly the state
+            # that went unnoticed for three weeks.
+            "remaining": remaining,
+            "by_horizon": by_horizon}
 
 
 def bucket_for_conviction(score: int) -> str:
@@ -341,6 +528,19 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
 
     with db.get_connection() as conn:
         rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+        # Coverage, deliberately outside both the dedup above and the
+        # `horizon` filter: how many distinct THESES carry a row at each
+        # horizon. A horizon sitting at zero beside a `distinct_days` in the
+        # twenties is scoring falling behind, not a future that has not
+        # happened yet, and nothing in this response could previously tell a
+        # reader which of the two they were looking at.
+        coverage = {h: 0 for h in HORIZONS}
+        for h, n in conn.execute(
+            "SELECT horizon_days, COUNT(DISTINCT setup_id) FROM setup_scores "
+            "GROUP BY horizon_days"
+        ).fetchall():
+            if h in coverage:
+                coverage[h] = n
 
     groups: dict[tuple, list[dict[str, Any]]] = {}
     for r in rows:
@@ -376,7 +576,17 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
             "target_first": resolutions.count("target_first"),
             "stop_first": resolutions.count("stop_first"),
             "unresolved": resolutions.count("unresolved"),
-            "sufficient": len(scored) >= MIN_SAMPLES and len(days) >= MIN_DISTINCT_DAYS,
+            # Deliberately `items`, not `scored`. `scored` drops rows whose
+            # directional_hit is NULL, and since buckets are partitioned BY
+            # direction that is all of a Neutral bucket and none of a
+            # directional one. Gating on it made every Neutral bucket
+            # permanently insufficient however large it grew, so both UIs
+            # printed "below 20/20" against a sample count in the hundreds —
+            # the shortfall copy contradicting the number beside it. The
+            # figure a Neutral bucket publishes is its mean return, and this
+            # is the count that figure rests on. Directional buckets are
+            # untouched: their two counts are equal by construction.
+            "sufficient": len(items) >= MIN_SAMPLES and len(days) >= MIN_DISTINCT_DAYS,
         })
 
     total = sum(b["samples"] for b in buckets)
@@ -390,4 +600,7 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
         # One flag the UI can branch on rather than re-deriving the rule.
         "calibrated": any(b["sufficient"] for b in buckets),
         "horizons": list(HORIZONS),
+        # Theses scored at each horizon, un-deduplicated. Lets the UI say
+        # "not knowable yet" only when that is actually true.
+        "setups_by_horizon": coverage,
     }

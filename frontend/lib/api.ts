@@ -257,6 +257,13 @@ export type ScoringRun = {
   scored: number;
   rows: number;
   skipped: number;
+  /** Candidates the run's own limit did not reach. Non-zero means scoring is
+   *  falling behind — the state that went unnoticed for three weeks while the
+   *  long horizons sat empty. */
+  remaining: number;
+  /** Rows written per horizon, keyed by horizon. A bare total cannot tell a
+   *  backfill apart from horizon 1 running again. */
+  by_horizon: Record<string, number>;
 };
 
 export type ScorecardResponse = {
@@ -267,6 +274,10 @@ export type ScorecardResponse = {
   min_distinct_days: number;
   calibrated: boolean;
   horizons: number[];
+  /** Theses scored at each horizon, keyed by horizon and NOT deduplicated.
+   *  Lets a reader tell "this horizon's future has not happened yet" from
+   *  "this horizon should have rows and does not". */
+  setups_by_horizon: Record<string, number>;
 };
 
 export type Mover = {

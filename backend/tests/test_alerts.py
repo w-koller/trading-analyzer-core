@@ -6,12 +6,18 @@ appear, and nothing says it should have.
 """
 
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import db  # noqa: E402
+
+_tmp = tempfile.mkdtemp(prefix="alerts-")
+db.DB_PATH = Path(_tmp) / "test.db"
+db.init_db()
+
 from app.config import settings  # noqa: E402
 from app.services import alerts  # noqa: E402
 
