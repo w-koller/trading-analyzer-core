@@ -36,7 +36,8 @@ COMPUTED = {
     "target_buy_price": 106.76,
     "upside_pct": 18.6,
 }
-ALLOWED = vn.collect_numbers(INPUTS, COMPUTED)
+ALLOWED = vn.allowed_numbers(vn.build_prompt("US.TEST", "dcf", INPUTS, COMPUTED),
+                             INPUTS, COMPUTED)
 
 GOOD = {
     "summary": "At a 9% discount rate against 8% near-term growth, the model "
@@ -127,15 +128,64 @@ check("an unrelated large number is still caught",
 prompt = vn.build_prompt("US.TEST", "dcf", INPUTS, COMPUTED)
 check("the prompt names the ticker", "US.TEST" in prompt)
 check("the prompt names the model", "Discounted Cash Flow" in prompt)
+# Checked NUMERICALLY, not as `str(v) in prompt`: the prompt prints figures
+# the way a reader would ("$1,200.00", "8.00%"), not as Python float text.
+_in_prompt = vn.extract_numbers(prompt)
 check("every input value appears in the prompt",
-      all(str(v) in prompt for v in INPUTS.values()))
+      all(any(abs(n - float(v)) < 1e-9 for n in _in_prompt) for v in INPUTS.values()))
 check("the computed intrinsic value appears in the prompt",
-      str(COMPUTED["intrinsic_value"]) in prompt)
+      any(abs(n - COMPUTED["intrinsic_value"]) < 1e-9 for n in _in_prompt))
 check("a None-valued field is omitted rather than printed as 'None'",
       "None" not in vn.build_prompt(
           "US.TEST", "ggm",
           {"dividend": 2.0, "growth_rate": 3.0, "discount_rate": 8.0},
           {**COMPUTED, "sensitivity_min": None, "sensitivity_max": None}))
+
+
+# --- real-company scale: the fidelity bug a raw float prompt caused ---------
+# cloud #52: `fcf: 127006000000.0` in the prompt, "$127 billion" in the
+# answer, and 127 matched nothing given — so a correct sentence was rejected
+# and retried. The prompt now prints the scale too, and the numbers a model
+# may cite are built from the prompt's own text.
+BIG_INPUTS = {**INPUTS, "fcf": 127_006_000_000.0, "cash": 22_443_000_000.0,
+              "debt": 33_366_000_000.0, "shares_outstanding": 24_100_000_000.0}
+BIG_COMPUTED = {**COMPUTED, "implied_growth_rate": 11.234,
+                "breakeven_discount_rate": 10.46, "terminal_value_share_pct": 71.8,
+                "margin_of_safety_pct": 25.0}
+big_prompt = vn.build_prompt("US.NVDA", "dcf", BIG_INPUTS, BIG_COMPUTED)
+BIG_ALLOWED = vn.allowed_numbers(big_prompt, BIG_INPUTS, BIG_COMPUTED)
+check("a large amount is printed with commas and its scale",
+      "$127,006,000,000 (about $127.01 billion)" in big_prompt, big_prompt.splitlines()[4])
+check("shares print their scale too",
+      "24,100,000,000 (about 24.10 billion)" in big_prompt)
+check("'$127 billion' is accepted against a 127,006,000,000 input",
+      vn.first_ungrounded_number("free cash flow of $127 billion", BIG_ALLOWED) is None)
+check("...and so is '$127.01 billion'",
+      vn.first_ungrounded_number("about $127.01 billion", BIG_ALLOWED) is None)
+check("...but not against the old raw-value-only list, which is the bug",
+      vn.first_ungrounded_number("free cash flow of $127 billion",
+                                 vn.collect_numbers(BIG_INPUTS, BIG_COMPUTED)) is not None)
+check("a supplied break-even figure may be cited",
+      vn.first_ungrounded_number("the verdict flips near 11.2% growth", BIG_ALLOWED) is None)
+check("...and the break-even line says what it is",
+      "BREAK-EVEN" in big_prompt and "11.23%" in big_prompt)
+check("an invented figure is still rejected at company scale",
+      vn.first_ungrounded_number("a fair value of $912 a share", BIG_ALLOWED) is not None)
+check("the system prompt no longer asks the model to estimate a break-even",
+      "roughly how much it would need to move" not in vn.SYSTEM_PROMPT
+      and "never estimate a break-even" in vn.SYSTEM_PROMPT)
+ggm_prompt = vn.build_prompt("US.KO", "ggm",
+                             {"dividend": 2.06, "use_next_year": False,
+                              "growth_rate": 3.0, "discount_rate": 8.0}, COMPUTED)
+check("the GGM dividend basis reaches the model in words, not as 'False'",
+      "the last twelve months' dividend (D0)" in ggm_prompt and "False" not in ggm_prompt)
+
+prepared = vn.prepare_interpretation(code="US.TEST", model_kind="dcf",
+                                     inputs=INPUTS, computed=COMPUTED)
+check_eq("prepare_interpretation carries the same prompt build_prompt makes",
+         prepared["user_prompt"], vn.build_prompt("US.TEST", "dcf", INPUTS, COMPUTED))
+check("...and a validator that accepts the good answer",
+      prepared["validate"](json.dumps(payload()))["summary"] == GOOD["summary"].strip())
 
 
 # --- generation: retry-and-correct, same shape as every other schema here --

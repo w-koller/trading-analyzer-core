@@ -75,11 +75,17 @@ to buy, sell, hold, add or trim. Describe what the numbers say and what the \
 result is most sensitive to — you are annotating a calculation, not making \
 a recommendation.
 
+Large amounts are shown with their scale as well ("$127,006,000,000 \
+(about $127.01 billion)"); quote whichever form reads better.
+
 Respond with a single JSON object and nothing else, with exactly these keys:
   "summary"          - 2 to 4 sentences on what is driving the verdict
   "sensitivity_note" - 1 to 2 sentences naming the single input the result \
-is most sensitive to, and roughly how much it would need to move to flip \
-the verdict"""
+is most sensitive to. Where a break-even figure is given (the growth rate or \
+discount rate at which value equals the market price), use it to say how \
+far that input would have to move to flip the verdict. Where none is given, \
+say which input matters most in words — never estimate a break-even \
+yourself."""
 
 
 class ValuationNarrativeError(RuntimeError):
@@ -206,6 +212,82 @@ def validate_interpretation(
 # --- the evidence put in front of the model --------------------------------
 
 
+# How each field reads to a person, and in what unit. The prompt used to
+# print Python's raw float text — `fcf: 69987000000.0` — and the fidelity
+# check then rejected the model for saying "$70 billion", because 70 was not
+# a number it had been given (cloud #52). Same bug class as cloud #38: the
+# numbers a model may cite are the ones the prompt TEXT says, and the text
+# should say them the way a reader would.
+_FIELDS: dict[str, tuple[str, str]] = {
+    "fcf": ("free cash flow, last twelve months", "money"),
+    "cash": ("cash and short-term investments", "money"),
+    "debt": ("total debt", "money"),
+    "assets": ("total assets", "money"),
+    "liabilities": ("total liabilities", "money"),
+    "preferred": ("preferred stock", "money"),
+    "minority_interest": ("minority interest", "money"),
+    "shares_outstanding": ("shares outstanding", "shares"),
+    "forecast_years": ("forecast period", "years"),
+    "growth_rate": ("growth rate a year", "rate"),
+    "discount_rate": ("discount rate / required return", "rate"),
+    "terminal_growth": ("growth after the forecast, forever", "rate"),
+    "dividend": ("dividend per share", "per_share"),
+    "use_next_year": ("dividend basis", "basis"),
+    "intrinsic_value": ("intrinsic value per share", "per_share"),
+    "market_price": ("market price (last close)", "per_share"),
+    "target_buy_price": ("target buy price", "per_share"),
+    "upside_pct": ("value above (+) or below (-) the price", "rate"),
+    "margin_of_safety_pct": ("margin of safety", "rate"),
+    "sensitivity_min": ("lowest value in the sensitivity table", "per_share"),
+    "sensitivity_max": ("highest value in the sensitivity table", "per_share"),
+    "implied_growth_rate": ("BREAK-EVEN: the growth rate at which value "
+                            "equals the market price", "rate"),
+    "breakeven_discount_rate": ("BREAK-EVEN: the discount rate at which "
+                                "value equals the market price", "rate"),
+    "terminal_value_share_pct": ("share of the value from after the "
+                                 "forecast period", "rate"),
+    "price_to_nav": ("price as a multiple of net assets per share", "multiple"),
+}
+
+_SCALES = ((1e12, "trillion"), (1e9, "billion"), (1e6, "million"))
+
+
+def _scaled(value: float) -> str | None:
+    for size, word in _SCALES:
+        if abs(value) >= size:
+            return f"{value / size:,.2f} {word}"
+    return None
+
+
+def _render(key: str, value: Any) -> str:
+    """One field as a person would read it, keeping the exact figure."""
+    unit = _FIELDS.get(key, ("", ""))[1]
+    if isinstance(value, bool):
+        if unit == "basis":
+            return ("next year's expected dividend (D1)" if value
+                    else "the last twelve months' dividend (D0)")
+        return "yes" if value else "no"
+    if not isinstance(value, (int, float)):
+        return str(value)
+    sign = "-" if value < 0 else ""
+    if unit == "money":
+        scaled = _scaled(abs(value))
+        exact = f"{sign}${abs(value):,.0f}"
+        return f"{exact} (about {sign}${scaled})" if scaled else f"{sign}${abs(value):,.2f}"
+    if unit == "shares":
+        scaled = _scaled(value)
+        return f"{value:,.0f}" + (f" (about {scaled})" if scaled else "")
+    if unit == "per_share":
+        return f"{sign}${abs(value):,.2f}"
+    if unit == "rate":
+        return f"{value:,.2f}%"
+    if unit == "years":
+        return f"{value:g} years"
+    if unit == "multiple":
+        return f"{value:,.2f}x"
+    return f"{value:,}"
+
+
 def build_prompt(
     code: str, model_kind: str, inputs: dict[str, Any], computed: dict[str, Any]
 ) -> str:
@@ -217,17 +299,60 @@ def build_prompt(
     ]
     for key, value in inputs.items():
         if value is not None:
-            lines.append(f"  {key}: {value}")
+            label = _FIELDS.get(key, (key, ""))[0]
+            lines.append(f"  {key} ({label}): {_render(key, value)}")
 
     lines.append("")
-    lines.append("COMPUTED RESULT YOU WERE GIVEN:")
+    lines.append("COMPUTED RESULT YOU WERE GIVEN (all computed in code):")
     for key, value in computed.items():
         if value is not None:
-            lines.append(f"  {key}: {value}")
+            label = _FIELDS.get(key, (key, ""))[0]
+            lines.append(f"  {key} ({label}): {_render(key, value)}")
 
     lines.append("")
     lines.append("Produce the JSON object now, using only the numbers above.")
     return "\n".join(lines)
+
+
+def allowed_numbers(prompt: str, *sources: dict[str, Any]) -> list[float]:
+    """Every number the model may cite: the raw values AND every figure the
+    prompt text prints — the rounded "127.01" of "about $127.01 billion"
+    is what lets "$127 billion" through. Built from the text for the reason
+    cloud #38 recorded: a figure the prompt shows is only the same value as
+    the one in the data structure when nothing transformed it on the way."""
+    return collect_numbers(*sources) + extract_numbers(prompt)
+
+
+def prepare_interpretation(
+    *,
+    code: str,
+    model_kind: str,
+    inputs: dict[str, Any],
+    computed: dict[str, Any],
+    max_retries: int = VALUATION_MAX_RETRIES,
+) -> dict[str, Any]:
+    """Everything `llm_json.generate_validated_json` needs apart from the
+    client and the model — the prompt, the validator and the correction
+    hint. Shared by the blocking call below and the streamed one
+    (`llm_stream.stream_validated_json`), so the two cannot drift into
+    validating the same answer differently."""
+    prompt = build_prompt(code, model_kind, inputs, computed)
+    allowed = allowed_numbers(prompt, inputs, computed)
+    return {
+        "system_prompt": SYSTEM_PROMPT,
+        "user_prompt": prompt,
+        "validate": lambda raw: validate_interpretation(
+            ai_thesis.extract_json(raw), allowed),
+        "subject": code,
+        "label": "valuation interpretation",
+        "correction_hint": (
+            "exactly the two required keys, and every number you mention "
+            "must be one you were given above"
+        ),
+        "transport_error": ValuationNarrativeError,
+        "exhausted_error": ValuationNarrativeValidationError,
+        "max_retries": max_retries,
+    }
 
 
 def generate_interpretation(
@@ -248,26 +373,11 @@ def generate_interpretation(
     RAG corpus.
     """
     model = model or ollama_models.active_model()
-    prompt = build_prompt(code, model_kind, inputs, computed)
-    allowed_numbers = collect_numbers(inputs, computed)
-
     result = llm_json.generate_validated_json(
         client if client is not None else llm_json.client(timeout),
         model=model,
-        system_prompt=SYSTEM_PROMPT,
-        user_prompt=prompt,
-        validate=lambda raw: validate_interpretation(
-            ai_thesis.extract_json(raw), allowed_numbers
-        ),
-        subject=code,
-        label="valuation interpretation",
-        correction_hint=(
-            "exactly the two required keys, and every number you mention "
-            "must be one you were given above"
-        ),
-        transport_error=ValuationNarrativeError,
-        exhausted_error=ValuationNarrativeValidationError,
-        max_retries=max_retries,
+        **prepare_interpretation(code=code, model_kind=model_kind, inputs=inputs,
+                                 computed=computed, max_retries=max_retries),
     )
     logger.info("valuation interpretation generated for %s (%s model)", code, model_kind)
     return {"code": code, "model_kind": model_kind, "model": model, **result}

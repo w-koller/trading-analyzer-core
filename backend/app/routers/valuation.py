@@ -47,6 +47,10 @@ class DCFInputs(BaseModel):
 
 class GGMInputs(BaseModel):
     dividend: float = _money_field()
+    # Whether `dividend` is the last twelve months (D0) or next year's (D1).
+    # The model was never told, and the two differ by a year of growth.
+    # Defaults to D0, which is what every caller before this sent.
+    use_next_year: bool = False
     growth_rate: float = _rate_field()
     discount_rate: float = _rate_field()
 
@@ -55,6 +59,8 @@ class NAVInputs(BaseModel):
     assets: float = _money_field()
     liabilities: float = _money_field()
     preferred: float = _money_field()
+    # Defaults to 0 so a caller that predates the field still validates.
+    minority_interest: float = _money_field(default=0.0)
     shares_outstanding: float = Field(gt=0, le=_MAX_MONEY, allow_inf_nan=False)
 
 
@@ -64,8 +70,22 @@ class ComputedResult(BaseModel):
     market_price: float = Field(ge=0, le=_MAX_MONEY, allow_inf_nan=False)
     target_buy_price: float = _money_field()
     upside_pct: float = Field(ge=-100.0, le=100_000.0, allow_inf_nan=False)
+    margin_of_safety_pct: float | None = Field(default=None, ge=0, le=100,
+                                               allow_inf_nan=False)
     sensitivity_min: float | None = Field(default=None, allow_inf_nan=False)
     sensitivity_max: float | None = Field(default=None, allow_inf_nan=False)
+    # Solved in the browser, never asked of the model (cloud #52): the
+    # prompt used to ask how far an input "would need to move to flip the
+    # verdict", which is a calculation. All optional, so an older caller
+    # still validates.
+    implied_growth_rate: float | None = Field(default=None, ge=-1000, le=1000,
+                                              allow_inf_nan=False)
+    breakeven_discount_rate: float | None = Field(default=None, ge=-100, le=100,
+                                                  allow_inf_nan=False)
+    terminal_value_share_pct: float | None = Field(default=None, ge=-10_000,
+                                                   le=10_000, allow_inf_nan=False)
+    price_to_nav: float | None = Field(default=None, ge=0, le=100_000,
+                                       allow_inf_nan=False)
 
 
 class ValuationInterpretRequest(BaseModel):
@@ -115,7 +135,7 @@ async def interpret(code: str, payload: ValuationInterpretRequest) -> dict[str, 
             code=code,
             model_kind=payload.model_kind,
             inputs=inputs,
-            computed=payload.computed.model_dump(),
+            computed=payload.computed.model_dump(exclude_none=True),
         )
     except valuation_narrative.ValuationNarrativeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
