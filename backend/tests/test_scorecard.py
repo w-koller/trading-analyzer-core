@@ -206,6 +206,34 @@ check("...but carries no hit rate at all",
       neutral["hit_rate"] is None,
       "a directionless thesis cannot be right or wrong about direction")
 
+# --- the at-a-glance summary (cloud #54) --------------------------------
+# One wrong Bearish call on a new day, so the summary has a miss to count.
+seed(2500, "US.MISS", "Bearish", 5, "2026-08-10T10:00:00+00:00", 0, 1.5)
+card = sc.scorecard()
+h1 = next(x for x in card["summary"] if x["horizon_days"] == 1)
+check_eq("the summary has one entry per horizon, in order",
+         [x["horizon_days"] for x in card["summary"]], list(sc.HORIZONS))
+check_eq("...counting DIRECTIONAL calls only — Neutral is not a call to score",
+         h1["samples"], 31 + 2 * (sc.MIN_DISTINCT_DAYS + 2) + 1)
+check_eq("...with hits counted, not re-derived from a rounded rate",
+         h1["hits"], h1["samples"] - 1)
+check_eq("...and days counted across the rows, not summed across buckets",
+         h1["distinct_days"], 2 + (sc.MIN_DISTINCT_DAYS + 2) + 1)
+bear_side = h1["by_direction"]["Bearish"]
+check("the Bearish side has the breadth to be sufficient on its own",
+      bear_side["sufficient"] is True and bear_side["samples"] == 2 * (sc.MIN_DISTINCT_DAYS + 2) + 1,
+      str(bear_side))
+check("...and its mean return is its own side's, the miss included",
+      abs(bear_side["mean_return_pct"]
+          - round((-1.0 * 2 * (sc.MIN_DISTINCT_DAYS + 2) + 1.5) / bear_side["samples"], 3)) < 1e-9)
+check("the Bullish side, 31 calls over 2 days, is not sufficient",
+      h1["by_direction"]["Bullish"]["sufficient"] is False)
+check("no mean return is reported across both sides mixed together",
+      "mean_return_pct" not in h1)
+empty = next(x for x in card["summary"] if x["horizon_days"] == 20)
+check("a horizon with nothing scored reports zeros and no rate, not an error",
+      empty["samples"] == 0 and empty["hit_rate"] is None and empty["sufficient"] is False)
+
 # --- idempotency --------------------------------------------------------
 before = sc.scorecard()["total_samples"]
 sc.save_scores([sc.SetupScore(100, 1, 100.0, 105.0, 5.0, 1, None, 1)])

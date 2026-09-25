@@ -500,6 +500,48 @@ def bucket_for_conviction(score: int) -> str:
     return "?"
 
 
+def _summarise(items: list[dict[str, Any]], *, with_mean: bool) -> dict[str, Any]:
+    """Directional rows only — the ones a hit rate is defined on."""
+    days = {i["thesis_day"] for i in items}
+    hits = sum(1 for i in items if i["directional_hit"])
+    resolutions = [i["resolution"] for i in items if i["resolution"]]
+    out: dict[str, Any] = {
+        "samples": len(items),
+        "hits": hits,
+        "hit_rate": round(hits / len(items), 4) if items else None,
+        "distinct_days": len(days),
+        "target_first": resolutions.count("target_first"),
+        "stop_first": resolutions.count("stop_first"),
+        "unresolved": resolutions.count("unresolved"),
+        "sufficient": len(items) >= MIN_SAMPLES and len(days) >= MIN_DISTINCT_DAYS,
+    }
+    if with_mean:
+        # Within ONE direction only. A raw forward return averaged across
+        # bullish and bearish calls mixes two opposite claims into a number
+        # that means neither.
+        returns = [i["forward_return_pct"] for i in items
+                   if i["forward_return_pct"] is not None]
+        out["mean_return_pct"] = round(sum(returns) / len(returns), 3) if returns else None
+    return out
+
+
+def _horizon_summary(h: int, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """How the directional calls at one horizon did, overall and by side.
+    Neutral is excluded for the reason it is excluded from every hit rate:
+    it makes no directional claim to be right or wrong about."""
+    directional = [r for r in rows
+                   if r["horizon_days"] == h and r["directional_hit"] is not None]
+    return {
+        "horizon_days": h,
+        **_summarise(directional, with_mean=False),
+        "by_direction": {
+            d: _summarise([r for r in directional if r["trade_direction"] == d],
+                          with_mean=True)
+            for d in ("Bullish", "Bearish")
+        },
+    }
+
+
 def scorecard(horizon: int | None = None) -> dict[str, Any]:
     """Aggregate hit rate by direction and conviction bucket.
 
@@ -592,6 +634,12 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
     total = sum(b["samples"] for b in buckets)
     all_days = {r["thesis_day"] for r in rows}
     return {
+        # One line per horizon, and per direction within it, for an
+        # at-a-glance read (cloud #54). Buckets cannot be summed for this:
+        # their distinct-day counts overlap, so the sufficiency of the whole
+        # can only be decided from the rows — here, where the rule lives
+        # (#69c), not re-derived in a browser.
+        "summary": [_horizon_summary(h, rows) for h in HORIZONS],
         "buckets": buckets,
         "total_samples": total,
         "distinct_days": len(all_days),
