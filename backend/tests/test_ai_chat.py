@@ -12,8 +12,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services.ai_chat import (  # noqa: E402
-    MAX_HISTORY_TURNS, MAX_MESSAGE_CHARS, ThinkSplitter, build_messages,
+    MAX_HISTORY_TURNS, MAX_MESSAGE_CHARS, build_messages,
 )
+from app.services.think_split import ThinkSplitter  # noqa: E402
 
 from tests.harness import check, report  # noqa: E402
 

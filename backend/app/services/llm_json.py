@@ -53,7 +53,7 @@ def client(timeout: float):
         A synchronous `openai.OpenAI`. Imported lazily so the offline tests can
         exercise everything here with a fake client and no openai installed.
 
-    For the async equivalent see `ai_chat._async_client`; the difference is
+    For the async equivalent see `async_client` below; the difference is
     load-bearing, since iterating a sync stream inside `async def` blocks the
     event loop for the whole generation.
     """
@@ -63,6 +63,45 @@ def client(timeout: float):
         api_key="ollama",          # Ollama ignores it, the SDK requires one
         timeout=timeout,
     )
+
+
+def async_client(timeout: float):
+    """`client`, but `openai.AsyncOpenAI` — for anything that STREAMS.
+
+    Used by the ticker chat and by `llm_stream`. Iterating the sync client's
+    stream inside an `async def` blocks the event loop for the whole
+    generation, which starves /livez and makes the watchdog restart a backend
+    that is working perfectly (decisions #26, #30).
+    """
+    from openai import AsyncOpenAI
+    return AsyncOpenAI(
+        base_url=settings.ollama_base_url,
+        api_key="ollama",
+        timeout=timeout,
+    )
+
+
+def correction_turn(exc: Exception, correction_hint: str) -> dict[str, str]:
+    """The user turn that hands a rejected answer's fault back to the model.
+
+    One definition for the blocking loop below and the streamed one in
+    `llm_stream`, so a streamed "brief me" and a blocking one correct the
+    model in exactly the same words.
+    """
+    return {
+        "role": "user",
+        "content": (
+            f"That response was rejected: {exc}\n\n"
+            "Return the corrected JSON object only — no markdown "
+            f"fence, no commentary, {correction_hint}."
+        ),
+    }
+
+
+def exhausted_message(subject: str, label: str, model: str, max_retries: int,
+                      last_error: Exception | None) -> str:
+    return (f"{subject}: no valid {label} from {model} after {max_retries} "
+            f"attempts. Last error: {last_error}")
 
 
 def generate_validated_json(
@@ -156,19 +195,10 @@ def generate_validated_json(
             # Hand the model its own output and the specific fault rather than
             # rerolling blind — see the module docstring.
             messages.append({"role": "assistant", "content": raw})
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"That response was rejected: {exc}\n\n"
-                    "Return the corrected JSON object only — no markdown "
-                    f"fence, no commentary, {correction_hint}."
-                ),
-            })
+            messages.append(correction_turn(exc, correction_hint))
 
     raise exhausted_error(
-        f"{subject}: no valid {label} from {model} after {max_retries} "
-        f"attempts. Last error: {last_error}"
-    )
+        exhausted_message(subject, label, model, max_retries, last_error))
 
 
 def _log_trace(response: Any, label: str, subject: str, attempt: int) -> None:

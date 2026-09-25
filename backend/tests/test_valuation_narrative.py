@@ -169,6 +169,14 @@ check("a supplied break-even figure may be cited",
       vn.first_ungrounded_number("the verdict flips near 11.2% growth", BIG_ALLOWED) is None)
 check("...and the break-even line says what it is",
       "BREAK-EVEN" in big_prompt and "11.23%" in big_prompt)
+check("a negative figure may be quoted as its magnitude ('39% below' for -38.98)",
+      vn.first_ungrounded_number(
+          "the value sits 39% below the price",
+          vn.allowed_numbers("", {"upside_pct": -38.98})) is None)
+check("...which does not open the door to an unrelated positive number",
+      vn.first_ungrounded_number(
+          "the value sits 64% below the price",
+          vn.allowed_numbers("", {"upside_pct": -38.98})) is not None)
 check("an invented figure is still rejected at company scale",
       vn.first_ungrounded_number("a fair value of $912 a share", BIG_ALLOWED) is not None)
 check("the system prompt no longer asks the model to estimate a break-even",

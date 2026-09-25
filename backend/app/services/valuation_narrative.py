@@ -319,8 +319,13 @@ def allowed_numbers(prompt: str, *sources: dict[str, Any]) -> list[float]:
     prompt text prints — the rounded "127.01" of "about $127.01 billion"
     is what lets "$127 billion" through. Built from the text for the reason
     cloud #38 recorded: a figure the prompt shows is only the same value as
-    the one in the data structure when nothing transformed it on the way."""
-    return collect_numbers(*sources) + extract_numbers(prompt)
+    the one in the data structure when nothing transformed it on the way.
+
+    A negative figure is allowed as its MAGNITUDE too. People write "39%
+    below the price", not "-39% above it" — found by the first live streamed
+    run, which rejected exactly that sentence about an upside of -38.98%."""
+    numbers = collect_numbers(*sources) + extract_numbers(prompt)
+    return numbers + [-n for n in numbers if n < 0]
 
 
 def prepare_interpretation(

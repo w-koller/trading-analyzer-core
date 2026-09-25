@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from app.services import llm_slots, valuation_narrative
+from app.services import (llm_json, llm_slots, llm_stream, ollama_models,
+                          valuation_narrative)
 
 router = APIRouter(prefix="/valuation", tags=["valuation"])
 
@@ -141,3 +142,38 @@ async def interpret(code: str, payload: ValuationInterpretRequest) -> dict[str, 
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         llm_slots.release(token)
+
+
+@router.post("/{code}/interpret/stream")
+async def interpret_stream(code: str, payload: ValuationInterpretRequest,
+                           request: Request):
+    """`interpret`, streamed: the model's reasoning live, then the validated
+    explanation (cloud #53). Same prompt, validator and correction words as
+    the blocking route — `prepare_interpretation` builds both — so the two
+    cannot hold an answer to different rules. The blocking route stays for
+    the self-hosted frontend, which still calls it.
+
+    Errors after the stream has begun arrive as an `error` SSE frame, not an
+    HTTP status: by then the 200 has been sent.
+    """
+    try:
+        inputs = payload.resolved_inputs()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    model = await run_in_threadpool(ollama_models.active_model)
+    events = llm_stream.stream_validated_json(
+        llm_json.async_client(valuation_narrative.VALUATION_TIMEOUT),
+        model=model,
+        **valuation_narrative.prepare_interpretation(
+            code=code, model_kind=payload.model_kind, inputs=inputs,
+            computed=payload.computed.model_dump(exclude_none=True)),
+    )
+    return llm_stream.sse_response(
+        events,
+        request=request,
+        slot_label=f"valuation {code}",
+        meta={"model": model, "model_kind": payload.model_kind},
+        result_extra={"code": code, "model_kind": payload.model_kind, "model": model},
+        errors=(valuation_narrative.ValuationNarrativeError,),
+    )
