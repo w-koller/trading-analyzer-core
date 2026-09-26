@@ -109,11 +109,34 @@ def _derive(password: str, salt: bytes, n: int, r: int, p: int) -> bytes:
 # Credentials
 # --------------------------------------------------------------------------
 
-def hash_password(plain: str) -> str:
-    """Used only by scripts/set_password.py, never on the request path."""
+def hash_password(plain: str, *, n: int | None = None, r: int | None = None,
+                  p: int | None = None) -> str:
+    """Used only by scripts/set_password.py, never on the request path.
+
+    The cost keywords exist for the cloud deployment, which hashes at a higher
+    parallelism than this box does and passes its own figures. Omitted, they
+    are the constants above, so self-hosted output is exactly what it was.
+    """
+    n, r, p = n or _SCRYPT_N, r or _SCRYPT_R, p or _SCRYPT_P
     salt = secrets.token_bytes(16)
-    dk = _derive(plain, salt, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
-    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${_b64e(salt)}${_b64e(dk)}"
+    dk = _derive(plain, salt, n, r, p)
+    return f"scrypt${n}${r}${p}${_b64e(salt)}${_b64e(dk)}"
+
+
+def scrypt_params(stored: str | None) -> tuple[int, int, int] | None:
+    """(N, r, p) from a stored scrypt string, or None if it is not one.
+
+    For deciding whether a hash was made at a lower cost than the current one
+    and should be replaced at the next successful login. Never raises: a
+    malformed string is a reason not to rehash, not a reason to fail a login.
+    """
+    try:
+        scheme, n, r, p, _salt, _digest = (stored or "").split("$")
+        if scheme != "scrypt":
+            return None
+        return int(n), int(r), int(p)
+    except ValueError:
+        return None
 
 
 def credentials_configured() -> bool:
