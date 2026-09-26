@@ -135,6 +135,7 @@ def peek_cached_bars(
     gateway,
     code: str,
     days: int = KLINE_LOOKBACK_DAYS,
+    max_age_seconds: float | None = None,
 ):
     """Bars from the cache if they are there and still fresh, else None.
 
@@ -153,13 +154,22 @@ def peek_cached_bars(
 
     Keyed identically to `get_cached_bars`, `days` included, so a caller that
     passes a different window gets None rather than a differently-sized frame.
+
+    `max_age_seconds` (default: the cache TTL) is how old an entry may be.
+    The TTL answers "is this old enough to FETCH again?"; a caller recording
+    what a scan just READ is asking a different question, and a scan that got
+    a cache hit may have read an entry already most of a TTL old. Cloud #58:
+    recording after a 24-minute batch found five such entries expired, and
+    those tickers' closes went unrecorded for three weeks. Never a fetch
+    either way.
     """
     cache_key = f"{getattr(gateway, 'cache_namespace', '')}|{code}:{days}"
     entry = _kline_cache.get(cache_key)
     if entry is None:
         return None
     cached_at, bars = entry
-    return bars if time.monotonic() - cached_at < cache_ttl() else None
+    limit = cache_ttl() if max_age_seconds is None else max_age_seconds
+    return bars if time.monotonic() - cached_at < limit else None
 
 
 def clear_kline_cache() -> None:
