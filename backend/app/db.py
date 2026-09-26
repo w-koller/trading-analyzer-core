@@ -1095,6 +1095,31 @@ def get_setup_history(codes: list[str], per_code: int = 10) -> dict[str, list[di
     return out
 
 
+def get_direction_counts(codes: list[str], since: str) -> dict[str, dict[str, int]]:
+    """How many theses each code has had since `since`, and how many of them
+    read Neutral — `{code: {"total": n, "neutral": k}}`, codes with none absent.
+
+    An aggregate rather than `get_setup_history`, because the one caller (the
+    cloud's watchlist tidy, cloud #57) needs two counts and not the rows: a
+    setup row is ~2KB, mostly `indicator_snapshot`, and a month of theses
+    across a watchlist is thousands of them (decisions #73's `SELECT *`
+    lesson). `since` must be in `now_iso()`'s shape, because `created_at` is
+    TEXT and compares lexicographically (decisions #43).
+    """
+    if not codes:
+        return {}
+    marks = ",".join("?" for _ in codes)
+    query = (
+        "SELECT code, COUNT(*) AS total,"
+        " SUM(CASE WHEN trade_direction = 'Neutral' THEN 1 ELSE 0 END) AS neutral"
+        f" FROM trade_setups WHERE code IN ({marks}) AND created_at >= ?"
+        " GROUP BY code"
+    )
+    with get_connection() as conn:
+        return {r["code"]: {"total": r["total"], "neutral": r["neutral"]}
+                for r in conn.execute(query, [*codes, since]).fetchall()}
+
+
 # --------------------------------------------------------------------------
 # Similarity search (RAG retrieval)
 # --------------------------------------------------------------------------
