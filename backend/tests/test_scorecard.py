@@ -25,7 +25,7 @@ db.init_db()
 
 from app.services import thesis_scorecard as sc               # noqa: E402
 
-from tests.harness import check, check_eq, report              # noqa: E402
+from tests.harness import check, check_close, check_eq, report  # noqa: E402
 
 
 def bars(closes, highs=None, lows=None, start="2026-06-01"):
@@ -135,7 +135,7 @@ check("a thesis whose last bar is the newest bar has no future to score",
       sc.score_setup(setup(13, last_bar="2026-06-02 00:00:00"), up) == [])
 
 # --- the aggregate, and its two independence guards ---------------------
-def seed(sid, code, direction, conviction, created_at, hit, ret):
+def seed(sid, code, direction, conviction, created_at, hit, ret, horizon=1):
     with db.get_connection() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO watchlist_cache "
@@ -149,7 +149,8 @@ def seed(sid, code, direction, conviction, created_at, hit, ret):
                VALUES (?, NULL, ?, 'US', ?, ?, 0, '{}', '[]', ?, ?,
                        'One. Two. Three.', '[]')""",
             (sid, code, created_at, created_at, direction, conviction))
-    sc.save_scores([sc.SetupScore(sid, 1, 100.0, 100.0 + ret, ret, hit, None, 1)])
+    sc.save_scores([sc.SetupScore(sid, horizon, 100.0, 100.0 + ret, ret, hit, None,
+                                  horizon)])
 
 
 # Thirty theses for ONE ticker on ONE day. This is the real shape: the
@@ -447,6 +448,105 @@ with db.get_connection() as conn:
 check("run_scoring never scores against a session that has not closed",
       exits and 999.0 not in exits,
       f"exits={exits} — 999.0 would mean the unsettled bar became an exit")
+
+
+# --- vs peers: the market's own move taken out --------------------------
+# Decisions #75 left this open: a raw hit rate mostly measures which way the
+# market went. The arithmetic is checked on plain rows first, so the
+# database's deduplication is not in the way of reading it.
+def row(code, direction, ret, day="2026-10-01", horizon=1):
+    return {"code": code, "trade_direction": direction, "forward_return_pct": ret,
+            "thesis_day": day, "horizon_days": horizon}
+
+
+# A rising day: eleven names up 2%, and two calls that rose less than that.
+rising = [row(f"US.P{i}", "Neutral", 2.0) for i in range(11)]
+bear, bull = row("US.BEAR", "Bearish", 0.5), row("US.BULL", "Bullish", 1.0)
+sc._attach_excess(rising + [bear, bull])
+check_close("excess is measured against the OTHER names, never the name itself",
+            bear["excess_pct"], 0.5 - (11 * 2.0 + 1.0) / 12)
+check("a Bearish call that rose less than its peers BEAT them, though its raw "
+      "call missed", sc._beat_peers(bear) is True,
+      "in a rising market, raw scoring marks every Bearish call wrong")
+check("a Bullish call that rose less than its peers did NOT beat them, though "
+      "its raw call hit", sc._beat_peers(bull) is False,
+      "in a rising market, raw scoring flatters every Bullish call")
+check("a Neutral call never beats or trails its peers",
+      sc._beat_peers(rising[0]) is None, "it names no direction to beat them in")
+
+# The floor on peers, at its boundary.
+thin = [row(f"US.T{i}", "Bullish", 1.0, day="2026-10-02") for i in range(sc.MIN_PEERS)]
+sc._attach_excess(thin)
+check("a name with fewer than MIN_PEERS others has no excess at all",
+      all(r["excess_pct"] is None for r in thin),
+      f"{sc.MIN_PEERS - 1} others is a few stocks, not a benchmark")
+enough = thin + [row("US.T_EXTRA", "Bullish", 1.0, day="2026-10-02")]
+sc._attach_excess(enough)
+check("...and with exactly MIN_PEERS others it has one",
+      all(r["excess_pct"] is not None for r in enough))
+
+# Markets do not benchmark each other: an HK name on the same date shares no
+# session with the US names beside it.
+us_only = [row(f"US.M{i}", "Bullish", float(i), day="2026-10-03") for i in range(12)]
+sc._attach_excess(us_only)
+before = [r["excess_pct"] for r in us_only]
+hk = row("HK.00700", "Bullish", 50.0, day="2026-10-03")
+sc._attach_excess(us_only + [hk])
+check_eq("a same-day name in another market does not move a US name's excess",
+         [r["excess_pct"] for r in us_only], before)
+check("...and has no US peers of its own", hk["excess_pct"] is None)
+
+# The same calls on different days are not each other's peers either.
+split = ([row(f"US.D{i}", "Bullish", 1.0, day="2026-10-04") for i in range(6)]
+         + [row(f"US.E{i}", "Bullish", 1.0, day="2026-10-05") for i in range(6)])
+sc._attach_excess(split)
+check("names on different days are never pooled into one peer set",
+      all(r["excess_pct"] is None for r in split), "6 + 6 is not 12 peers")
+
+neutral_only = sc._vs_peers(rising, with_mean=True)
+check("a Neutral set reports a mean excess and no hit rate",
+      neutral_only["hit_rate"] is None and neutral_only["hits"] is None
+      and neutral_only["mean_excess_pct"] is not None, str(neutral_only))
+check("mean excess is only reported within one direction",
+      "mean_excess_pct" not in sc._vs_peers(rising + [bear, bull], with_mean=False))
+
+# End to end through scorecard(), on horizon 5 and days no earlier section used.
+# Every day the market rises 2% and one Bearish call rises 0.5%: the raw record
+# says it was wrong every time, and against its peers it was right every time.
+for d in range(sc.MIN_DISTINCT_DAYS):
+    when = f"2026-11-{d + 1:02d}T10:00:00+00:00"
+    for i in range(11):
+        seed(7000 + d * 20 + i, f"US.PEER{i}", "Neutral", 3, when, None, 2.0, horizon=5)
+    seed(7000 + d * 20 + 19, "US.XBEAR", "Bearish", 5, when, 0, 0.5, horizon=5)
+card = sc.scorecard()
+xbear = next(b for b in card["buckets"] if b["horizon_days"] == 5
+             and b["direction"] == "Bearish" and b["conviction_bucket"] == "5-6")
+check_eq("the raw record calls a Bearish call in a rising market wrong",
+         xbear["hit_rate"], 0.0)
+check_eq("...and against same-day peers, right",
+         xbear["vs_peers"]["hit_rate"], 1.0)
+check_close("...by the margin it trailed them", xbear["vs_peers"]["mean_excess_pct"],
+            round(0.5 - 2.0, 3))
+check("the vs-peers figures carry their own sufficiency",
+      xbear["vs_peers"]["sufficient"] is True
+      and xbear["vs_peers"]["distinct_days"] == sc.MIN_DISTINCT_DAYS,
+      str(xbear["vs_peers"]))
+# 5001/5002 were scored at horizon 5 above, on a day with no other names.
+lonely = next(b for b in card["buckets"] if b["horizon_days"] == 5
+              and b["direction"] == "Bullish")
+check("a call with no peer set stays in the raw figures and drops out of vs peers",
+      lonely["samples"] >= 2 and lonely["vs_peers"]["samples"] == 0
+      and lonely["vs_peers"]["hit_rate"] is None, str(lonely))
+h5 = next(x for x in card["summary"] if x["horizon_days"] == 5)
+check_eq("the summary's Bearish side reads the same vs peers",
+         h5["by_direction"]["Bearish"]["vs_peers"]["hit_rate"], 1.0)
+check("...while the horizon line mixes both sides and so reports no mean excess",
+      "mean_excess_pct" not in h5["vs_peers"]
+      and "mean_excess_pct" in h5["by_direction"]["Bearish"]["vs_peers"])
+check("the response states the peer floor and what the peers are",
+      card["min_peers"] == sc.MIN_PEERS and "other names" in card["peer_basis"])
+check("vs peers leaves `calibrated` on the raw rule it has always used",
+      card["calibrated"] is any(b["sufficient"] for b in card["buckets"]))
 
 
 report("thesis scorecard")

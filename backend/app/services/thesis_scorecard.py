@@ -90,6 +90,12 @@ MIN_SAMPLES = 20
 # it only gets diluted.
 MIN_DISTINCT_DAYS = 20
 
+# The fewest OTHER names a same-day average may rest on before a sample is
+# compared against it. Below this the "peers" are a handful of stocks, and a
+# call's excess over them is mostly those stocks' own news. A floor, not a
+# tuned value: the live corpus scores ~50 names a day, so it never binds there.
+MIN_PEERS = 10
+
 
 @dataclass
 class SetupScore:
@@ -500,6 +506,88 @@ def bucket_for_conviction(score: int) -> str:
     return "?"
 
 
+def _attach_excess(rows: list[dict[str, Any]]) -> None:
+    """Give every sample an `excess_pct`: its forward return minus the mean of
+    the OTHER names scored over the same window.
+
+    This is the market-beta correction decisions #75 left open. A raw hit rate
+    mostly measures which way the market went: #67 recorded every Bearish
+    bucket showing a positive mean return because the market rose, and on the
+    live corpus (2026-09-27) Bullish 5-6 at three days read 49% raw but 61%
+    against same-day peers, while Bullish 1-4 read 46% raw and 44% against
+    them. The two disagree in both directions, so the raw figure cannot be
+    read as a lower or upper bound on skill.
+
+    The benchmark is the equal-weighted mean of every other deduplicated
+    sample at the same horizon, thesis day and market, all directions
+    included, i.e. the other names the model looked at that day. It is not an
+    index, and says so in the payload. It needs no data source the scorecard
+    does not already hold, which is why it is this and not an index fetch.
+
+    Leave-one-out, so a sample is never partly compared against itself; with
+    fewer than MIN_PEERS others it has no excess at all rather than one
+    measured against a few stocks. Grouping on the thesis day stands in for
+    grouping on the forward window: measured on the live corpus, 8 of 3,067
+    samples read a different bar from the rest of their day, so the key the
+    deduplication already uses is the same window in practice, without
+    parsing `indicator_snapshot` for every row.
+    """
+    groups: dict[tuple, list[float]] = {}
+    for r in rows:
+        if r["forward_return_pct"] is not None:
+            key = (r["horizon_days"], r["thesis_day"], market_hours.market_of(r["code"]))
+            groups.setdefault(key, []).append(r["forward_return_pct"])
+    totals = {k: (sum(v), len(v)) for k, v in groups.items()}
+    for r in rows:
+        r["excess_pct"] = None
+        ret = r["forward_return_pct"]
+        if ret is None:
+            continue
+        total, n = totals[(r["horizon_days"], r["thesis_day"],
+                           market_hours.market_of(r["code"]))]
+        if n - 1 >= MIN_PEERS:
+            r["excess_pct"] = ret - (total - ret) / (n - 1)
+
+
+def _beat_peers(item: dict[str, Any]) -> bool | None:
+    """Whether a call beat its peers in the direction it named. None for
+    Neutral, which names no direction, and for a sample with no peer set."""
+    excess = item["excess_pct"]
+    if excess is None:
+        return None
+    if item["trade_direction"] == "Bullish":
+        return excess > 0
+    if item["trade_direction"] == "Bearish":
+        return excess < 0
+    return None
+
+
+def _vs_peers(items: list[dict[str, Any]], *, with_mean: bool) -> dict[str, Any]:
+    """The same figures as the raw ones, measured against same-day peers.
+
+    Carries its own sample and day counts and its own `sufficient`, because a
+    sample without enough peers drops out here and not from the raw figures,
+    so the two can rest on different evidence. `sufficient` counts every
+    sample the figures rest on, Neutral included, for #75(f)'s reason: a
+    Neutral bucket's published figure is its mean excess.
+    """
+    rel = [i for i in items if i["excess_pct"] is not None]
+    beats = [b for b in map(_beat_peers, rel) if b is not None]
+    days = {i["thesis_day"] for i in rel}
+    out: dict[str, Any] = {
+        "samples": len(rel),
+        "hits": sum(beats) if beats else None,
+        "hit_rate": round(sum(beats) / len(beats), 4) if beats else None,
+        "distinct_days": len(days),
+        "sufficient": len(rel) >= MIN_SAMPLES and len(days) >= MIN_DISTINCT_DAYS,
+    }
+    if with_mean:
+        # Within one direction only, for the same reason as mean_return_pct.
+        excess = [i["excess_pct"] for i in rel]
+        out["mean_excess_pct"] = round(sum(excess) / len(excess), 3) if excess else None
+    return out
+
+
 def _summarise(items: list[dict[str, Any]], *, with_mean: bool) -> dict[str, Any]:
     """Directional rows only — the ones a hit rate is defined on."""
     days = {i["thesis_day"] for i in items}
@@ -522,6 +610,7 @@ def _summarise(items: list[dict[str, Any]], *, with_mean: bool) -> dict[str, Any
         returns = [i["forward_return_pct"] for i in items
                    if i["forward_return_pct"] is not None]
         out["mean_return_pct"] = round(sum(returns) / len(returns), 3) if returns else None
+    out["vs_peers"] = _vs_peers(items, with_mean=with_mean)
     return out
 
 
@@ -584,6 +673,8 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
             if h in coverage:
                 coverage[h] = n
 
+    _attach_excess(rows)
+
     groups: dict[tuple, list[dict[str, Any]]] = {}
     for r in rows:
         key = (r["horizon_days"], r["trade_direction"],
@@ -629,6 +720,7 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
             # is the count that figure rests on. Directional buckets are
             # untouched: their two counts are equal by construction.
             "sufficient": len(items) >= MIN_SAMPLES and len(days) >= MIN_DISTINCT_DAYS,
+            "vs_peers": _vs_peers(items, with_mean=True),
         })
 
     total = sum(b["samples"] for b in buckets)
@@ -645,6 +737,11 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
         "distinct_days": len(all_days),
         "min_samples": MIN_SAMPLES,
         "min_distinct_days": MIN_DISTINCT_DAYS,
+        "min_peers": MIN_PEERS,
+        # What `vs_peers` is measured against, in words, so no reader takes
+        # its zero for an index.
+        "peer_basis": ("the average move of the other names scored over the "
+                       "same days, in the same market"),
         # One flag the UI can branch on rather than re-deriving the rule.
         "calibrated": any(b["sufficient"] for b in buckets),
         "horizons": list(HORIZONS),
