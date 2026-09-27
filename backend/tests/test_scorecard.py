@@ -462,7 +462,7 @@ def row(code, direction, ret, day="2026-10-01", horizon=1):
 # A rising day: eleven names up 2%, and two calls that rose less than that.
 rising = [row(f"US.P{i}", "Neutral", 2.0) for i in range(11)]
 bear, bull = row("US.BEAR", "Bearish", 0.5), row("US.BULL", "Bullish", 1.0)
-sc._attach_excess(rising + [bear, bull])
+sc.attach_excess(rising + [bear, bull])
 check_close("excess is measured against the OTHER names, never the name itself",
             bear["excess_pct"], 0.5 - (11 * 2.0 + 1.0) / 12)
 check("a Bearish call that rose less than its peers BEAT them, though its raw "
@@ -476,22 +476,22 @@ check("a Neutral call never beats or trails its peers",
 
 # The floor on peers, at its boundary.
 thin = [row(f"US.T{i}", "Bullish", 1.0, day="2026-10-02") for i in range(sc.MIN_PEERS)]
-sc._attach_excess(thin)
+sc.attach_excess(thin)
 check("a name with fewer than MIN_PEERS others has no excess at all",
       all(r["excess_pct"] is None for r in thin),
       f"{sc.MIN_PEERS - 1} others is a few stocks, not a benchmark")
 enough = thin + [row("US.T_EXTRA", "Bullish", 1.0, day="2026-10-02")]
-sc._attach_excess(enough)
+sc.attach_excess(enough)
 check("...and with exactly MIN_PEERS others it has one",
       all(r["excess_pct"] is not None for r in enough))
 
 # Markets do not benchmark each other: an HK name on the same date shares no
 # session with the US names beside it.
 us_only = [row(f"US.M{i}", "Bullish", float(i), day="2026-10-03") for i in range(12)]
-sc._attach_excess(us_only)
+sc.attach_excess(us_only)
 before = [r["excess_pct"] for r in us_only]
 hk = row("HK.00700", "Bullish", 50.0, day="2026-10-03")
-sc._attach_excess(us_only + [hk])
+sc.attach_excess(us_only + [hk])
 check_eq("a same-day name in another market does not move a US name's excess",
          [r["excess_pct"] for r in us_only], before)
 check("...and has no US peers of its own", hk["excess_pct"] is None)
@@ -499,7 +499,7 @@ check("...and has no US peers of its own", hk["excess_pct"] is None)
 # The same calls on different days are not each other's peers either.
 split = ([row(f"US.D{i}", "Bullish", 1.0, day="2026-10-04") for i in range(6)]
          + [row(f"US.E{i}", "Bullish", 1.0, day="2026-10-05") for i in range(6)])
-sc._attach_excess(split)
+sc.attach_excess(split)
 check("names on different days are never pooled into one peer set",
       all(r["excess_pct"] is None for r in split), "6 + 6 is not 12 peers")
 

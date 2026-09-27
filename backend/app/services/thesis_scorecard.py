@@ -506,7 +506,7 @@ def bucket_for_conviction(score: int) -> str:
     return "?"
 
 
-def _attach_excess(rows: list[dict[str, Any]]) -> None:
+def attach_excess(rows: list[dict[str, Any]]) -> None:
     """Give every sample an `excess_pct`: its forward return minus the mean of
     the OTHER names scored over the same window.
 
@@ -673,7 +673,7 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
             if h in coverage:
                 coverage[h] = n
 
-    _attach_excess(rows)
+    attach_excess(rows)
 
     groups: dict[tuple, list[dict[str, Any]]] = {}
     for r in rows:
