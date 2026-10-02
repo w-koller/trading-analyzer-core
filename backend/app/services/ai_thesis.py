@@ -76,6 +76,15 @@ def char_ceiling(target: int) -> int:
     """The longest text accepted for a field that asks for `target` chars."""
     return int(target * (1 + LENGTH_SLACK))
 
+# Which wording of the prompt wrote a thesis, stamped into its
+# `indicator_snapshot` beside `model` (cloud #74). Version 2 gave conviction a
+# scale and stopped the no-precedents text capping it, which moves the whole
+# distribution: a 5 written under version 1 and a 5 written under version 2
+# are not the same claim, and the Track record has to be able to tell them
+# apart. Bump this whenever a change to SYSTEM_PROMPT or `build_prompt` could
+# move what the model scores; rows written before the stamp existed are 1.
+PROMPT_VERSION = 2
+
 VALID_DIRECTIONS = ("Bullish", "Bearish", "Neutral")
 REQUIRED_KEYS = frozenset({
     "conviction_score", "trade_direction", "reasoning",
@@ -112,7 +121,21 @@ The three levels must be ordered. For a Bullish thesis the stop sits below \
 the entry and the entry below the target; for a Bearish thesis the stop sits \
 above the entry and the entry above the target. Use null for any level you \
 cannot justify from the data given, rather than inventing one to satisfy the \
-ordering."""
+ordering.
+
+"conviction_score" is how much of the evidence lines up behind your \
+direction. Use the whole scale:
+  1-2   the evidence mostly points the other way; this is a weak read
+  3-4   mixed: about as much argues against the call as for it
+  5-6   most of it agrees, but something material argues against it
+  7-8   trend, momentum and position in the bands all agree with the call, \
+the data is fresh, and nothing in the news contradicts it
+  9-10  as 7-8, and the agreement is unusually strong, such as a fresh cross \
+in the direction of an established trend
+Missing inputs are not evidence against a call: having no options data or no \
+comparable past setups lowers nothing on its own. Out-of-date prices are \
+different, and the freshness line says when they are. For a Neutral thesis, \
+the score is how sure you are that neither direction has the edge."""
 
 
 class ThesisError(RuntimeError):
@@ -371,10 +394,20 @@ from app.services.prompt_blocks import (  # noqa: E402  (grouped with its use)
 )
 
 __all__ = [
-    "AIThesis", "ThesisError", "ThesisValidationError",
+    "PROMPT_VERSION", "AIThesis", "ThesisError", "ThesisValidationError",
     "build_prompt", "char_ceiling", "count_sentences", "extract_json",
     "generate_thesis", "sentence_bounds", "validate_thesis",
 ]
+
+
+# Only said when there ARE precedents to weigh (cloud #74). Said over an
+# empty list it read as a second instruction to hold conviction down, on top
+# of the no-precedents text that already did, on every cloud thesis.
+_WEIGH_PRECEDENTS = (
+    "\nWeigh the historical outcomes above: if setups shaped like this one have "
+    "resolved badly, that should pull your conviction down even when the "
+    "technicals look clean, and vice versa.\n"
+)
 
 
 def build_prompt(
@@ -407,11 +440,7 @@ RECENT NEWS:
 
 HISTORICALLY SIMILAR SETUPS AND HOW THEY ACTUALLY RESOLVED:
 {_similar_block(similar_setups)}
-
-Weigh the historical outcomes above: if setups shaped like this one have \
-resolved badly, that should pull your conviction down even when the \
-technicals look clean, and vice versa.
-
+{_WEIGH_PRECEDENTS if similar_setups else ""}
 Produce the JSON object now."""
 
 

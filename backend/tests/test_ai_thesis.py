@@ -19,7 +19,9 @@ db.DB_PATH = Path(_tmp) / "test.db"
 db.init_db()
 
 from app.services.ai_thesis import (          # noqa: E402
+    PROMPT_VERSION,
     REQUIRED_SENTENCES,
+    SYSTEM_PROMPT,
     AIThesis,
     ThesisError,
     ThesisValidationError,
@@ -374,6 +376,19 @@ live = build_prompt(code="US.PLTR", market="US", indicators={"close": 179.94},
 check("real-time data is labelled real-time", "real-time" in live)
 check("empty RAG history is stated, not silently omitted",
       "No comparable historical setups" in live)
+# cloud #74: the no-precedents text used to say "keep conviction modest", and
+# on cloud that was every thesis — nothing ever scored above 6.
+check("...as an absence of evidence, not a reason to hold conviction down",
+      "absence of evidence" in live and "modest" not in live)
+check("...and the weigh-the-precedents instruction appears only when there are some",
+      "Weigh the historical outcomes" not in live
+      and "Weigh the historical outcomes" in p)
+check("the system prompt gives conviction a scale, top to bottom",
+      all(band in SYSTEM_PROMPT for band in ("1-2", "3-4", "5-6", "7-8", "9-10"))
+      and "Use the whole scale" in SYSTEM_PROMPT)
+check("...and says missing inputs are not evidence against a call",
+      "Missing inputs are not evidence against a call" in SYSTEM_PROMPT)
+check_eq("the prompt version is 2", PROMPT_VERSION, 2)
 check("missing chain is stated", "No options chain data" in live)
 
 report("ai_thesis")

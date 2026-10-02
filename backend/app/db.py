@@ -1193,8 +1193,9 @@ def get_similar_setups(
 
     Candidates below `min_similarity` are dropped rather than returned as the
     best of a bad set. Returning nothing is the honest answer when nothing
-    comparable exists, and `ai_thesis._similar_block` already handles the
-    empty case well ("no track record to lean on, keep conviction modest").
+    comparable exists, and `prompt_blocks._similar_block` already handles the
+    empty case ("no track record to weigh ... judge it on its own
+    technicals").
     An unrelated precedent presented as a 0.95 match is worse than no
     precedent at all.
     """

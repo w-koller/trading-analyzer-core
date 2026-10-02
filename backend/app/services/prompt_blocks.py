@@ -115,10 +115,17 @@ def _walls_block(walls: dict[str, Any] | None) -> str:
 def _similar_block(similar: list[dict[str, Any]]) -> str:
     """The RAG payload: past setups shaped like this one, and how they ended."""
     if not similar:
+        # This used to end "keep conviction modest — there is no track record
+        # to lean on". On cloud that is EVERY thesis (trade_outcomes is empty
+        # on prod), and 3,507 of 3,707 reasonings then named the missing
+        # history as the reason for a middling score; nothing ever scored
+        # above 6 (cloud #74). An absence of precedents is an absence of
+        # evidence, and the prompt now says so in those words.
         return (
-            "  No comparable historical setups have been recorded yet. Judge "
-            "this setup on its own technicals and keep conviction modest — "
-            "there is no track record to lean on."
+            "  No comparable historical setups have been recorded yet, so "
+            "there is no track record to weigh. That is an absence of "
+            "evidence, not evidence against this setup: judge it on its own "
+            "technicals."
         )
     lines = []
     for i, s in enumerate(similar, 1):

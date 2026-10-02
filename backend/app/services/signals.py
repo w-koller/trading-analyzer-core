@@ -401,6 +401,108 @@ def _snapshot_of(setup: dict[str, Any]) -> dict[str, Any] | None:
     return snap if isinstance(snap, dict) else None
 
 
+# --- one thesis, explained (cloud #74) -------------------------------------
+#
+# The ticker page's "why this score". The model's conviction is its own
+# judgement and cannot be decomposed after the fact: it has no internal
+# weights to read back. What CAN be shown, deterministically and for every
+# thesis ever stored, is what that thesis read and which way each input
+# points. Since prompt version 2 the model is asked to score conviction by
+# exactly that ("how much of the evidence lines up"), so the two are meant to
+# agree, and where they do not the reader can see it.
+#
+# These are the opportunity ranking's own components, reused rather than
+# re-derived, so the two pages cannot describe one input two ways. What is
+# deliberately NOT here: no weights and no total. A composite beside the
+# conviction score would be a second number competing to be "the score".
+# `conviction` itself is left out because it is the thing being explained, and
+# `extended_move` because it needs a live quote the ticker page does not buy.
+
+#: How each factor reads. "signed" favours the call's direction (above 0.5) or
+#: opposes it (below); "unsigned" says nothing about direction (a squeeze, a
+#: stretch from the average); "history" is about the earlier theses.
+FACTOR_KIND: dict[str, str] = {
+    "trend_structure": "signed",
+    "momentum": "signed",
+    "cross_event": "signed",
+    "room_to_run": "signed",
+    "positioning": "signed",
+    "not_overextended": "unsigned",
+    "squeeze": "unsigned",
+    "persistence": "history",
+    "conviction_trend": "history",
+}
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    try:
+        out = json.loads(value or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return out if isinstance(out, list) else []
+
+
+def explain_setup(setup: dict[str, Any],
+                  history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """What one stored thesis read, and which way each input points.
+
+    `history` is that ticker's recent theses, newest first, with `setup` as
+    its first row: the same shape `build_opportunities` reads. Pure over its
+    inputs. None when the setup's snapshot cannot be parsed.
+
+    A Neutral thesis names no direction, so its signed factors are measured
+    against Bullish and reported as a LEAN (`relative_to`): "the trend leans
+    up, momentum leans down" is exactly the evidence a Neutral call rests on.
+    """
+    snap = _snapshot_of(setup)
+    if snap is None:
+        return None
+    ind = snap.get("indicators") or {}
+    walls = snap.get("walls")
+    has_walls = bool(walls and walls.get("has_walls"))
+    direction = setup["trade_direction"]
+    lean = direction if direction in ("Bullish", "Bearish") else "Bullish"
+    persistence, agreeing, of_last = _persistence(history, direction)
+
+    values = {
+        "trend_structure": _trend_structure(ind, lean),
+        "momentum": _momentum(ind, lean),
+        "cross_event": _cross_event(ind, lean),
+        "room_to_run": _room_to_run(ind, walls, lean),
+        "not_overextended": _not_overextended(ind),
+        "squeeze": _squeeze(ind),
+        "persistence": persistence,
+        "conviction_trend": _conviction_trend(history),
+    }
+    if has_walls:
+        values["positioning"] = _positioning(walls, lean)
+
+    return {
+        "setup_id": setup["id"],
+        "direction": direction,
+        "conviction": setup["conviction_score"],
+        "relative_to": lean,
+        "factors": [
+            {"key": k, "value": round(v, 3), "kind": FACTOR_KIND[k]}
+            for k, v in values.items()
+        ],
+        "agreeing": agreeing,
+        "of_last": of_last,
+        "missing": {
+            "precedents": not _json_list(setup.get("similar_setup_ids")),
+            "options": not has_walls,
+            "bars_stale": bool(snap.get("bars_stale")),
+            "delayed": bool(setup.get("is_delayed_data")),
+            "warnings": [str(w) for w in (ind.get("warnings") or [])],
+        },
+        # Absent on rows written before the stamp existed, which were all
+        # written under the first wording.
+        "prompt_version": snap.get("prompt_version", 1),
+    }
+
+
 def build_opportunities(
     tickers: list[dict[str, Any]],
     movers: dict[str, dict[str, Any]] | None = None,

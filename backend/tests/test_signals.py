@@ -267,4 +267,64 @@ check("every row carries its own freshness stamps",
       all(k in a for k in ("is_delayed_data", "data_as_of", "thesis_created_at")),
       "a ranking that hides how old its evidence is repeats the bug rule #7 exists for")
 
+# --- explain_setup: one thesis, and which way each input points (cloud #74) -
+def history_of(code, n=8):
+    return db.get_setup_history([code], n)[code]
+
+
+seed("US.WHY", direction="Bullish", conviction=7, n=8, macd_hist=1.0,
+     percent_b=0.3, sma_trend="bullish", sma_cross="golden")
+why = signals.explain_setup(history_of("US.WHY")[0], history_of("US.WHY"))
+f = {x["key"]: x for x in why["factors"]}
+check("an uptrend supports a Bullish call", f["trend_structure"]["value"] > 0.5,
+      str(f["trend_structure"]))
+check("...as do a rising MACD histogram and a golden cross",
+      f["momentum"]["value"] > 0.5 and f["cross_event"]["value"] == 1.0)
+check("eight Bullish theses in a row read as full agreement",
+      f["persistence"]["value"] == 1.0 and why["agreeing"] == 8 and why["of_last"] == 8)
+check("there is no composite score to compete with conviction",
+      "score" not in why and "conviction" not in f, str(sorted(why)))
+check("each factor states whether it is signed, unsigned, or about past theses",
+      f["trend_structure"]["kind"] == "signed" and f["squeeze"]["kind"] == "unsigned"
+      and f["persistence"]["kind"] == "history")
+check("no options data means no positioning factor, and says so",
+      "positioning" not in f and why["missing"]["options"] is True)
+check("no precedents is reported as missing, not as evidence against",
+      why["missing"]["precedents"] is True)
+check_eq("a row written before the prompt stamp reads as version 1",
+         why["prompt_version"], 1)
+
+# The same inputs under a Bearish call point the other way.
+seed("US.WHYB", direction="Bearish", conviction=5, n=8, macd_hist=1.0,
+     percent_b=0.3, sma_trend="bullish", sma_cross="golden")
+whyb = signals.explain_setup(history_of("US.WHYB")[0], history_of("US.WHYB"))
+fb = {x["key"]: x for x in whyb["factors"]}
+check("an uptrend argues AGAINST a Bearish call",
+      fb["trend_structure"]["value"] < 0.5 and fb["cross_event"]["value"] == 0.0)
+check("...while an unsigned factor reads the same whichever way the call went",
+      fb["squeeze"]["value"] == f["squeeze"]["value"]
+      and fb["not_overextended"]["value"] == f["not_overextended"]["value"])
+
+# Neutral names no direction, so its signed factors are a LEAN, against Bullish.
+seed("US.WHYN", direction="Neutral", conviction=4, n=4, sma_trend="bullish")
+whyn = signals.explain_setup(history_of("US.WHYN")[0], history_of("US.WHYN"))
+fn = {x["key"]: x for x in whyn["factors"]}
+check_eq("a Neutral thesis is measured against Bullish, as a lean",
+         whyn["relative_to"], "Bullish")
+check("...so its uptrend shows as leaning up", fn["trend_structure"]["value"] > 0.5)
+
+walls = {"has_walls": True, "call_wall": 110.0, "put_wall": 90.0,
+         "call_wall_distance_pct": 10.0, "put_wall_distance_pct": -10.0,
+         "put_call_oi_ratio": 0.6}
+seed("US.WHYW", n=2, walls=walls, bars_stale=True)
+whyw = signals.explain_setup(history_of("US.WHYW")[0], history_of("US.WHYW"))
+check("options data, where it exists, adds the positioning factor",
+      any(x["key"] == "positioning" for x in whyw["factors"])
+      and whyw["missing"]["options"] is False)
+check("out-of-date prices are flagged", whyw["missing"]["bars_stale"] is True)
+check("an unreadable snapshot explains nothing rather than guessing",
+      signals.explain_setup({**history_of("US.WHY")[0], "indicator_snapshot": "{bad"},
+                            history_of("US.WHY")) is None)
+
+
 report("signals")

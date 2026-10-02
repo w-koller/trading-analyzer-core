@@ -190,6 +190,10 @@ def scan_ticker(
             # corpus — so a thesis has to carry its own provenance. Goes in
             # the JSON column, so no schema change.
             "model": ollama_models.active_model(),
+            # And which wording of the prompt (cloud #74). A prompt change can
+            # move the whole conviction scale without the model changing, so
+            # provenance needs both halves. Absent on older rows, read as 1.
+            "prompt_version": ai_thesis.PROMPT_VERSION,
             # And which data source it read. Same argument as `model` directly
             # above, one layer down: two providers can serve the same code and
             # disagree — a broker feed is forward-adjusted where a vendor feed
