@@ -11,10 +11,12 @@ Three CLAUDE.md rules converge in this file:
 
 - **Rule #2 — strict JSON only, exact shape, reject/retry on malformed
   output, never silently coerce.** `validate_thesis()` is deliberately
-  unforgiving: wrong type, wrong casing, extra keys and a reasoning field
-  that isn't exactly three sentences are all rejections. Each rejection is
-  fed back to the model as a correction turn, so a retry is informed rather
-  than a reroll.
+  unforgiving about SHAPE: wrong type, wrong casing and extra keys are all
+  rejections. Length is the one place it gives a little (cloud #72): three
+  sentences are asked for and two to four are accepted, because a reasoning
+  one sentence off target is a fine answer and a retry costs a whole
+  generation. Each rejection is fed back to the model as a correction turn,
+  so a retry is informed rather than a reroll.
 
 - **Rule #3 — RAG retrieval happens before the call.** `generate_thesis()`
   performs the `db.get_similar_setups()` lookup itself rather than accepting
@@ -51,8 +53,28 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 300.0   # deepseek-r1:32b runs ~90-120s per thesis
 DEFAULT_MAX_RETRIES = 3
-MAX_NOTES_LENGTH = 500
-REQUIRED_SENTENCES = 3
+MAX_NOTES_LENGTH = 500    # what the prompt asks for; see char_ceiling()
+REQUIRED_SENTENCES = 3    # what the prompt asks for; see sentence_bounds()
+
+# How far a prose field may miss its target before it is sent back (cloud
+# #72). Every length rule here and in the narratives that import these
+# helpers asks the model for one length and accepts a little either side of
+# it. Measured on prod over September: every thesis sent back for length had
+# two or four sentences, and the valuation summaries ran 548, 562, 562 and
+# 739 characters against 500. Each retry cost a full generation for an answer
+# that was already fine; only the 739 was a real overrun, and it still is.
+SENTENCE_SLACK = 1
+LENGTH_SLACK = 0.2
+
+
+def sentence_bounds(low: int, high: int) -> tuple[int, int]:
+    """The sentence counts accepted for a field that asks for `low`-`high`."""
+    return max(1, low - SENTENCE_SLACK), high + SENTENCE_SLACK
+
+
+def char_ceiling(target: int) -> int:
+    """The longest text accepted for a field that asks for `target` chars."""
+    return int(target * (1 + LENGTH_SLACK))
 
 VALID_DIRECTIONS = ("Bullish", "Bearish", "Neutral")
 REQUIRED_KEYS = frozenset({
@@ -75,11 +97,11 @@ seven keys:
 
   "conviction_score":  integer 1-10
   "trade_direction":   exactly one of "Bullish", "Bearish", "Neutral"
-  "reasoning":         a string of EXACTLY three sentences
+  "reasoning":         a string of three sentences
   "suggested_entry":   number or null
   "suggested_stop":    number or null
   "suggested_target":  number or null
-  "key_levels_notes":  short string or null
+  "key_levels_notes":  a short string (under 500 characters) or null
 
 "suggested_entry" is the price at which the setup becomes worth acting on — \
 where a buyer would want to be filled. That is not always the current price: \
@@ -150,7 +172,11 @@ def count_sentences(text: str) -> int:
             protected,
             flags=re.IGNORECASE,
         )
-    parts = [p for p in re.split(r"[.!?]+(?=\s|$)", protected) if p.strip()]
+    # A closing quote or bracket may sit between the full stop and the space:
+    # `He said "buy." It fell.` is two sentences, and splitting only on a
+    # stop followed directly by whitespace read it as one.
+    parts = [p for p in re.split(r"[.!?]+[\"'”’)\]]*(?=\s|$)", protected)
+             if p.strip()]
     return len(parts)
 
 
@@ -250,10 +276,11 @@ def validate_thesis(payload: dict[str, Any]) -> AIThesis:
     if not isinstance(reasoning, str) or not reasoning.strip():
         raise ThesisValidationError("reasoning must be a non-empty string")
     sentences = count_sentences(reasoning)
-    if sentences != REQUIRED_SENTENCES:
+    low, high = sentence_bounds(REQUIRED_SENTENCES, REQUIRED_SENTENCES)
+    if not low <= sentences <= high:
         raise ThesisValidationError(
-            f"reasoning must be exactly {REQUIRED_SENTENCES} sentences, "
-            f"got {sentences}: {reasoning!r}"
+            f"reasoning should be {REQUIRED_SENTENCES} sentences ({low} to "
+            f"{high} accepted), got {sentences}: {reasoning!r}"
         )
 
     entry = _number(payload["suggested_entry"], "suggested_entry")
@@ -266,9 +293,10 @@ def validate_thesis(payload: dict[str, Any]) -> AIThesis:
             raise ThesisValidationError(
                 f"key_levels_notes must be a string or null, got {type(notes).__name__}"
             )
-        if len(notes) > MAX_NOTES_LENGTH:
+        if len(notes) > char_ceiling(MAX_NOTES_LENGTH):
             raise ThesisValidationError(
-                f"key_levels_notes must be at most {MAX_NOTES_LENGTH} characters, "
+                f"key_levels_notes should be under {MAX_NOTES_LENGTH} characters "
+                f"(at most {char_ceiling(MAX_NOTES_LENGTH)} accepted), "
                 f"got {len(notes)}"
             )
         notes = notes.strip() or None
@@ -344,8 +372,8 @@ from app.services.prompt_blocks import (  # noqa: E402  (grouped with its use)
 
 __all__ = [
     "AIThesis", "ThesisError", "ThesisValidationError",
-    "build_prompt", "count_sentences", "extract_json",
-    "generate_thesis", "validate_thesis",
+    "build_prompt", "char_ceiling", "count_sentences", "extract_json",
+    "generate_thesis", "sentence_bounds", "validate_thesis",
 ]
 
 

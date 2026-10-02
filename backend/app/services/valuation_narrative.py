@@ -52,6 +52,9 @@ logger = logging.getLogger(__name__)
 VALUATION_TIMEOUT = 300.0
 VALUATION_MAX_RETRIES = 3
 
+# What the prompt asks for. A little either side is accepted (cloud #72):
+# see `ai_thesis.sentence_bounds` and `ai_thesis.char_ceiling`, and
+# `_check_prose` below.
 MAX_PROSE = 500
 MIN_SUMMARY_SENTENCES, MAX_SUMMARY_SENTENCES = 2, 4
 MIN_NOTE_SENTENCES, MAX_NOTE_SENTENCES = 1, 2
@@ -79,13 +82,14 @@ Large amounts are shown with their scale as well ("$127,006,000,000 \
 (about $127.01 billion)"); quote whichever form reads better.
 
 Respond with a single JSON object and nothing else, with exactly these keys:
-  "summary"          - 2 to 4 sentences on what is driving the verdict
-  "sensitivity_note" - 1 to 2 sentences naming the single input the result \
-is most sensitive to. Where a break-even figure is given (the growth rate or \
-discount rate at which value equals the market price), use it to say how \
-far that input would have to move to flip the verdict. Where none is given, \
-say which input matters most in words — never estimate a break-even \
-yourself."""
+  "summary"          - 2 to 4 sentences, under 500 characters, on what is \
+driving the verdict
+  "sensitivity_note" - 1 to 2 sentences, under 500 characters, naming the \
+single input the result is most sensitive to. Where a break-even figure is \
+given (the growth rate or discount rate at which value equals the market \
+price), use it to say how far that input would have to move to flip the \
+verdict. Where none is given, say which input matters most in words — never \
+estimate a break-even yourself."""
 
 
 class ValuationNarrativeError(RuntimeError):
@@ -149,6 +153,29 @@ def first_ungrounded_number(text: str, allowed: list[float]) -> str | None:
 # --- schema ------------------------------------------------------------
 
 
+def _check_prose(field: str, text: str, low: int, high: int) -> None:
+    """Length and sentence count, with the tolerance cloud #72 allows.
+
+    The prompt asks for `low`-`high` sentences under MAX_PROSE characters; a
+    little either side is accepted rather than sent back for another whole
+    generation. Live, summaries of 548 and 562 characters were rejected
+    against 500 and then rewritten to say the same thing.
+    """
+    ceiling = ai_thesis.char_ceiling(MAX_PROSE)
+    if len(text) > ceiling:
+        raise ValuationNarrativeValidationError(
+            f"{field} is {len(text)} chars; keep it under {MAX_PROSE} "
+            f"({ceiling} accepted)"
+        )
+    lo, hi = ai_thesis.sentence_bounds(low, high)
+    n = ai_thesis.count_sentences(text)
+    if not lo <= n <= hi:
+        raise ValuationNarrativeValidationError(
+            f"{field} has {n} sentences; write {low} to {high} "
+            f"({lo} to {hi} accepted)"
+        )
+
+
 def validate_interpretation(
     payload: dict[str, Any], allowed_numbers: list[float]
 ) -> dict[str, Any]:
@@ -171,32 +198,14 @@ def validate_interpretation(
     summary = payload["summary"]
     if not isinstance(summary, str) or not summary.strip():
         raise ValuationNarrativeValidationError("summary must be a non-empty string")
-    if len(summary) > MAX_PROSE:
-        raise ValuationNarrativeValidationError(
-            f"summary is {len(summary)} chars, max {MAX_PROSE}"
-        )
-    s_sentences = ai_thesis.count_sentences(summary)
-    if not MIN_SUMMARY_SENTENCES <= s_sentences <= MAX_SUMMARY_SENTENCES:
-        raise ValuationNarrativeValidationError(
-            f"summary has {s_sentences} sentences, needs "
-            f"{MIN_SUMMARY_SENTENCES} to {MAX_SUMMARY_SENTENCES}"
-        )
+    _check_prose("summary", summary, MIN_SUMMARY_SENTENCES, MAX_SUMMARY_SENTENCES)
 
     note = payload["sensitivity_note"]
     if not isinstance(note, str) or not note.strip():
         raise ValuationNarrativeValidationError(
             "sensitivity_note must be a non-empty string"
         )
-    if len(note) > MAX_PROSE:
-        raise ValuationNarrativeValidationError(
-            f"sensitivity_note is {len(note)} chars, max {MAX_PROSE}"
-        )
-    n_sentences = ai_thesis.count_sentences(note)
-    if not MIN_NOTE_SENTENCES <= n_sentences <= MAX_NOTE_SENTENCES:
-        raise ValuationNarrativeValidationError(
-            f"sensitivity_note has {n_sentences} sentences, needs "
-            f"{MIN_NOTE_SENTENCES} to {MAX_NOTE_SENTENCES}"
-        )
+    _check_prose("sensitivity_note", note, MIN_NOTE_SENTENCES, MAX_NOTE_SENTENCES)
 
     for field, text in (("summary", summary), ("sensitivity_note", note)):
         bad = first_ungrounded_number(text, allowed_numbers)

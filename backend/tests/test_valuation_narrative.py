@@ -91,12 +91,35 @@ rejects("a missing key is rejected",
         {"summary": GOOD["summary"]}, "missing keys")
 rejects("an empty summary is rejected",
         payload(summary="   "), "non-empty string")
-rejects("a one-sentence summary is rejected (needs 2-4)",
-        payload(summary="It is undervalued."), "sentences")
-rejects("a five-sentence summary is rejected (needs 2-4)",
-        payload(summary="One. Two. Three. Four. Five."), "sentences")
-rejects("a three-sentence sensitivity_note is rejected (needs 1-2)",
-        payload(sensitivity_note="One. Two. Three."), "sentences")
+# 2-4 and 1-2 are what the prompt asks for; one either side is accepted
+# (cloud #72), so the rejections start one further out.
+check("a one-sentence summary is accepted (one under the 2-4 asked for)",
+      vn.validate_interpretation(payload(summary="It is undervalued."), ALLOWED)
+      ["summary"] == "It is undervalued.")
+check("a five-sentence summary is accepted (one over)",
+      vn.validate_interpretation(
+          payload(summary="One. Two. Three. Four. Five."), ALLOWED) is not None)
+rejects("a six-sentence summary is rejected",
+        payload(summary="One. Two. Three. Four. Five. Six."), "1 to 5 accepted")
+check("a three-sentence sensitivity_note is accepted (one over the 1-2 asked for)",
+      vn.validate_interpretation(
+          payload(sensitivity_note="One. Two. Three."), ALLOWED) is not None)
+rejects("a four-sentence sensitivity_note is rejected",
+        payload(sensitivity_note="One. Two. Three. Four."), "1 to 3 accepted")
+
+
+# --- length: 500 asked for, 20% over accepted (cloud #72) -------------------
+
+# Live, summaries of 548 and 562 characters were sent back against 500 and
+# rewritten to say the same thing; a 739 was a real overrun and still is.
+_two = "It is undervalued on these inputs " + "x" * 520 + ". It holds."
+check("a summary 60 characters over the 500 asked for is accepted",
+      vn.validate_interpretation(payload(summary=_two), ALLOWED) is not None,
+      f"{len(_two)} chars")
+rejects("a summary past 600 characters is rejected",
+        payload(summary="It is cheap " + "x" * 600 + ". It holds."), "600 accepted")
+rejects("...and so is a sensitivity_note past 600",
+        payload(sensitivity_note="Growth " + "x" * 600 + "."), "600 accepted")
 
 
 # --- numeric fidelity: the mechanism this schema needs ----------------------

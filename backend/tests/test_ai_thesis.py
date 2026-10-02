@@ -19,6 +19,7 @@ db.DB_PATH = Path(_tmp) / "test.db"
 db.init_db()
 
 from app.services.ai_thesis import (          # noqa: E402
+    REQUIRED_SENTENCES,
     AIThesis,
     ThesisError,
     ThesisValidationError,
@@ -29,7 +30,7 @@ from app.services.ai_thesis import (          # noqa: E402
     validate_thesis,
 )
 
-from tests.harness import check, report  # noqa: E402
+from tests.harness import check, check_eq, report  # noqa: E402
 
 
 def rejects(label, payload, expect_fragment=""):
@@ -118,6 +119,13 @@ check("real abbreviations are still protected",
       count_sentences("Volume hit approx. 40M today. It held. Done.") == 3,
       "the \\b must not break the cases the list exists for")
 check("whitespace is zero sentences", count_sentences("   ") == 0)
+# A closing quote or bracket between the stop and the space used to hide the
+# break, so a quoted sentence silently merged with the one after it.
+_quoted = 'Analysts said "hold." Volume fell. It held.'
+check("a closing quote after the stop still ends a sentence",
+      count_sentences(_quoted) == 3, f"got {count_sentences(_quoted)}")
+check("...and so does a closing bracket",
+      count_sentences("The band is wide (as expected.) Volume fell. It held.") == 3)
 
 # --- happy path --------------------------------------------------------
 t = validate_thesis(GOOD)
@@ -147,10 +155,18 @@ rejects("lowercase direction rejected, not title-cased",
         {**GOOD, "trade_direction": "bullish"}, "case-sensitive")
 rejects("invented direction rejected", {**GOOD, "trade_direction": "Very Bullish"},
         "trade_direction")
-rejects("two-sentence reasoning rejected",
-        {**GOOD, "reasoning": "One. Two."}, "exactly 3 sentences")
-rejects("four-sentence reasoning rejected",
-        {**GOOD, "reasoning": "One. Two. Three. Four."}, "exactly 3 sentences")
+# Three sentences are asked for; one either side is accepted (cloud #72),
+# because every thesis prod sent back for length in September had two or four
+# and the retry bought nothing but another generation.
+check("two-sentence reasoning accepted (one under the three asked for)",
+      validate_thesis({**GOOD, "reasoning": "One. Two."}).reasoning == "One. Two.")
+check("four-sentence reasoning accepted (one over)",
+      validate_thesis({**GOOD, "reasoning": "One. Two. Three. Four."}) is not None)
+rejects("one-sentence reasoning rejected",
+        {**GOOD, "reasoning": "One."}, "2 to 4 accepted")
+rejects("five-sentence reasoning rejected",
+        {**GOOD, "reasoning": "One. Two. Three. Four. Five."}, "2 to 4 accepted")
+check_eq("the thesis still ASKS for three sentences", REQUIRED_SENTENCES, 3)
 rejects("empty reasoning rejected", {**GOOD, "reasoning": "   "}, "non-empty")
 rejects("string stop rejected, not parsed",
         {**GOOD, "suggested_stop": "172.0"}, "number or null")
@@ -161,8 +177,10 @@ rejects("bool entry rejected", {**GOOD, "suggested_entry": True}, "number or nul
 rejects("missing suggested_entry rejected — the schema is seven keys now",
         {k: v for k, v in GOOD.items() if k != "suggested_entry"},
         "missing required keys")
-rejects("over-long notes rejected", {**GOOD, "key_levels_notes": "x" * 501},
-        "at most 500")
+check("notes 20% over the 500 asked for are accepted",
+      validate_thesis({**GOOD, "key_levels_notes": "x" * 600}).key_levels_notes == "x" * 600)
+rejects("notes past that are rejected", {**GOOD, "key_levels_notes": "x" * 601},
+        "600 accepted")
 rejects("non-string notes rejected", {**GOOD, "key_levels_notes": 42}, "string or null")
 
 # Directional coherence: advice that would lose money if followed.

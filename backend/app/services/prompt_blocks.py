@@ -12,10 +12,10 @@ rounding for display, so rule #1 is not in play.
 
 Deliberately left behind in `ai_thesis`: SYSTEM_PROMPT, build_prompt,
 extract_json, validate_thesis and count_sentences. Those encode rule #2 —
-strict JSON, exactly three sentences, six exact keys — which is a contract of
-the thesis endpoint specifically. A conversation has no such shape, and a
-chat that imported the thesis validator would be enforcing a rule that does
-not apply to it.
+strict JSON, seven exact keys, about three sentences of reasoning — which is
+a contract of the thesis endpoint specifically. A conversation has no such
+shape, and a chat that imported the thesis validator would be enforcing a
+rule that does not apply to it.
 """
 
 from __future__ import annotations
