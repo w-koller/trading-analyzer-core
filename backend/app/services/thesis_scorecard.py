@@ -43,13 +43,24 @@ mode a measurement can have. Each is pinned by a test:
 
 Neutral theses are excluded from hit rate entirely. They make no directional
 claim, so scoring them either way would invent a prediction the thesis did
-not make.
+not make. A directional call whose price ended exactly where it started is
+excluded the same way (cloud #73): it was neither right nor wrong, and
+counting it as a miss for BOTH sides marked a flat close against whichever
+call happened to be made.
+
+Every hit rate also carries a 95% range (`hit_rate_range`). Calls made on the
+same day share that day's market, so they are not independent observations;
+the range is widened accordingly rather than computed as if they were. See
+`_rate_range`.
 """
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
+import math
+import statistics
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -507,8 +518,9 @@ def bucket_for_conviction(score: int) -> str:
 
 
 def attach_excess(rows: list[dict[str, Any]]) -> None:
-    """Give every sample an `excess_pct`: its forward return minus the mean of
-    the OTHER names scored over the same window.
+    """Give every sample its move against the OTHER names scored over the same
+    window: `excess_pct` against their mean, `excess_vs_median_pct` against
+    their median.
 
     This is the market-beta correction decisions #75 left open. A raw hit rate
     mostly measures which way the market went: #67 recorded every Bearish
@@ -518,11 +530,21 @@ def attach_excess(rows: list[dict[str, Any]]) -> None:
     them. The two disagree in both directions, so the raw figure cannot be
     read as a lower or upper bound on skill.
 
-    The benchmark is the equal-weighted mean of every other deduplicated
-    sample at the same horizon, thesis day and market, all directions
-    included, i.e. the other names the model looked at that day. It is not an
-    index, and says so in the payload. It needs no data source the scorecard
-    does not already hold, which is why it is this and not an index fetch.
+    The benchmark is every other deduplicated sample at the same horizon,
+    thesis day and market, all directions included, i.e. the other names the
+    model looked at that day (the "field", on screen). It is not an index,
+    and says so in the payload. It needs no data source the scorecard does
+    not already hold, which is why it is this and not an index fetch.
+
+    WHY TWO CENTRES (cloud #73). Whether a call beat the field is judged
+    against the MEDIAN, and how far it moved against it is measured from the
+    MEAN. Daily returns are right-skewed, so fewer than half of names beat
+    their peers' mean: measured on prod on 2026-10-02, 47.0% / 48.2% / 50.0% /
+    46.2% at 1 / 3 / 5 / 10 days, against 49.9-50.3% for the median. Judged on
+    the mean, the "coin flip" line every chart draws at 50% was handing
+    Bearish calls a head start of up to four points and Bullish calls the same
+    handicap. The mean stays right for the size of the move, which is a
+    different question and sums to zero within a day by construction.
 
     Leave-one-out, so a sample is never partly compared against itself; with
     fewer than MIN_PEERS others it has no excess at all rather than one
@@ -538,22 +560,37 @@ def attach_excess(rows: list[dict[str, Any]]) -> None:
             key = (r["horizon_days"], r["thesis_day"], market_hours.market_of(r["code"]))
             groups.setdefault(key, []).append(r["forward_return_pct"])
     totals = {k: (sum(v), len(v)) for k, v in groups.items()}
+    ordered = {k: sorted(v) for k, v in groups.items()}
     for r in rows:
         r["excess_pct"] = None
+        r["excess_vs_median_pct"] = None
         ret = r["forward_return_pct"]
         if ret is None:
             continue
-        total, n = totals[(r["horizon_days"], r["thesis_day"],
-                           market_hours.market_of(r["code"]))]
+        key = (r["horizon_days"], r["thesis_day"], market_hours.market_of(r["code"]))
+        total, n = totals[key]
         if n - 1 >= MIN_PEERS:
             r["excess_pct"] = ret - (total - ret) / (n - 1)
+            r["excess_vs_median_pct"] = ret - _median_without(ordered[key], ret)
+
+
+def _median_without(ordered: list[float], value: float) -> float:
+    """The median of `ordered` with ONE occurrence of `value` removed.
+
+    A peer group is ~50 names, so copying the list per sample is cheap and
+    much easier to trust than index arithmetic around the removed element.
+    """
+    i = bisect.bisect_left(ordered, value)
+    return statistics.median(ordered[:i] + ordered[i + 1:])
 
 
 def _beat_peers(item: dict[str, Any]) -> bool | None:
-    """Whether a call beat its peers in the direction it named. None for
-    Neutral, which names no direction, and for a sample with no peer set."""
-    excess = item["excess_pct"]
-    if excess is None:
+    """Whether a call beat the field in the direction it named: moved further
+    that way than the middle name of its peers. None for Neutral, which names
+    no direction, for a sample with no peer set, and for an exact tie, which
+    is neither."""
+    excess = item.get("excess_vs_median_pct")
+    if excess is None or excess == 0:
         return None
     if item["trade_direction"] == "Bullish":
         return excess > 0
@@ -562,22 +599,69 @@ def _beat_peers(item: dict[str, Any]) -> bool | None:
     return None
 
 
+def _rate_range(outcomes: list[tuple[str, int]]) -> list[float] | None:
+    """A 95% range for a hit rate, allowing for calls on the same day moving
+    together. `outcomes` is one (thesis_day, 1 or 0) per decided call.
+
+    Fifty calls made on one day are not fifty independent observations: they
+    share that day's market, which is the whole reason MIN_DISTINCT_DAYS
+    exists. An interval computed as if they were would be far too narrow, so
+    this one is computed on an EFFECTIVE sample size, the count divided by
+    the design effect of clustering by day:
+
+        design effect = (day-clustered variance of the rate) / (p(1-p)/n)
+
+    floored at 1, with the usual G/(G-1) small-sample correction on the
+    clustered variance. A Wilson interval on that effective count then keeps
+    the range inside 0-100% and behaves at rates near either end.
+
+    None below two calls or two days: one day has no between-day variation to
+    measure, and a range drawn from nothing would look like information.
+    """
+    n = len(outcomes)
+    by_day: dict[str, list[int]] = {}
+    for day, hit in outcomes:
+        by_day.setdefault(day, []).append(hit)
+    g = len(by_day)
+    if n < 2 or g < 2:
+        return None
+    p = sum(hit for _, hit in outcomes) / n
+    srs = p * (1 - p) / n
+    deff = 1.0
+    if srs > 0:
+        clustered = (sum((sum(h) - len(h) * p) ** 2 for h in by_day.values())
+                     / (n * n) * g / (g - 1))
+        deff = max(1.0, clustered / srs)
+    n_eff = n / deff
+    z = 1.96
+    denom = 1 + z * z / n_eff
+    centre = (p + z * z / (2 * n_eff)) / denom
+    half = z * math.sqrt(p * (1 - p) / n_eff + z * z / (4 * n_eff * n_eff)) / denom
+    return [round(max(0.0, centre - half), 4), round(min(1.0, centre + half), 4)]
+
+
 def _vs_peers(items: list[dict[str, Any]], *, with_mean: bool) -> dict[str, Any]:
-    """The same figures as the raw ones, measured against same-day peers.
+    """The same figures as the raw ones, measured against the field.
 
     Carries its own sample and day counts and its own `sufficient`, because a
     sample without enough peers drops out here and not from the raw figures,
     so the two can rest on different evidence. `sufficient` counts every
     sample the figures rest on, Neutral included, for #75(f)'s reason: a
-    Neutral bucket's published figure is its mean excess.
+    Neutral bucket's published figure is its mean excess. A directional call
+    that tied the field exactly is left out, as a flat close is from the raw
+    figures (cloud #73); measured on prod there were none in 3,827.
     """
-    rel = [i for i in items if i["excess_pct"] is not None]
-    beats = [b for b in map(_beat_peers, rel) if b is not None]
+    rel = [i for i in items if i["excess_pct"] is not None
+           and (i["trade_direction"] == "Neutral" or _beat_peers(i) is not None)]
+    decided = [(i["thesis_day"], int(b)) for i in rel
+               if (b := _beat_peers(i)) is not None]
+    hits = sum(hit for _, hit in decided)
     days = {i["thesis_day"] for i in rel}
     out: dict[str, Any] = {
         "samples": len(rel),
-        "hits": sum(beats) if beats else None,
-        "hit_rate": round(sum(beats) / len(beats), 4) if beats else None,
+        "hits": hits if decided else None,
+        "hit_rate": round(hits / len(decided), 4) if decided else None,
+        "hit_rate_range": _rate_range(decided) if decided else None,
         "distinct_days": len(days),
         "sufficient": len(rel) >= MIN_SAMPLES and len(days) >= MIN_DISTINCT_DAYS,
     }
@@ -589,19 +673,28 @@ def _vs_peers(items: list[dict[str, Any]], *, with_mean: bool) -> dict[str, Any]
 
 
 def _summarise(items: list[dict[str, Any]], *, with_mean: bool) -> dict[str, Any]:
-    """Directional rows only — the ones a hit rate is defined on."""
-    days = {i["thesis_day"] for i in items}
-    hits = sum(1 for i in items if i["directional_hit"])
+    """Directional rows only — the ones a hit rate is defined on.
+
+    A call whose price ended exactly where it started is in `items` but not in
+    the hit rate (cloud #73): it was neither right nor wrong. Its return, a
+    real 0.00%, still counts toward the mean, and its stop-or-target outcome
+    still counts, since either level may have been reached on the way.
+    """
+    decided = [i for i in items if i["directional_hit"] is not None]
+    days = {i["thesis_day"] for i in decided}
+    hits = sum(1 for i in decided if i["directional_hit"])
     resolutions = [i["resolution"] for i in items if i["resolution"]]
     out: dict[str, Any] = {
-        "samples": len(items),
+        "samples": len(decided),
         "hits": hits,
-        "hit_rate": round(hits / len(items), 4) if items else None,
+        "hit_rate": round(hits / len(decided), 4) if decided else None,
+        "hit_rate_range": _rate_range(
+            [(i["thesis_day"], int(i["directional_hit"])) for i in decided]),
         "distinct_days": len(days),
         "target_first": resolutions.count("target_first"),
         "stop_first": resolutions.count("stop_first"),
         "unresolved": resolutions.count("unresolved"),
-        "sufficient": len(items) >= MIN_SAMPLES and len(days) >= MIN_DISTINCT_DAYS,
+        "sufficient": len(decided) >= MIN_SAMPLES and len(days) >= MIN_DISTINCT_DAYS,
     }
     if with_mean:
         # Within ONE direction only. A raw forward return averaged across
@@ -617,9 +710,11 @@ def _summarise(items: list[dict[str, Any]], *, with_mean: bool) -> dict[str, Any
 def _horizon_summary(h: int, rows: list[dict[str, Any]]) -> dict[str, Any]:
     """How the directional calls at one horizon did, overall and by side.
     Neutral is excluded for the reason it is excluded from every hit rate:
-    it makes no directional claim to be right or wrong about."""
+    it makes no directional claim to be right or wrong about. Selected by
+    direction rather than by a non-null hit, so a flat close still reaches
+    the mean and the against-the-field figures (see `_summarise`)."""
     directional = [r for r in rows
-                   if r["horizon_days"] == h and r["directional_hit"] is not None]
+                   if r["horizon_days"] == h and r["trade_direction"] in ("Bullish", "Bearish")]
     return {
         "horizon_days": h,
         **_summarise(directional, with_mean=False),
@@ -673,6 +768,14 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
             if h in coverage:
                 coverage[h] = n
 
+    # A flat close is neither a hit nor a miss (cloud #73). Applied here, at
+    # read time, so no stored row is ever rewritten (#75c); `score_setup`
+    # still stores 0 for it, and changing that would leave old and new rows
+    # meaning different things. Measured on prod: 3 of 3,849 samples.
+    for r in rows:
+        if r["directional_hit"] is not None and r["forward_return_pct"] == 0:
+            r["directional_hit"] = None
+
     attach_excess(rows)
 
     groups: dict[tuple, list[dict[str, Any]]] = {}
@@ -705,6 +808,8 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
                 round(sum(i["directional_hit"] for i in scored) / len(scored), 4)
                 if scored else None
             ),
+            "hit_rate_range": _rate_range(
+                [(i["thesis_day"], int(i["directional_hit"])) for i in scored]),
             "mean_return_pct": round(sum(returns) / len(returns), 3) if returns else None,
             "target_first": resolutions.count("target_first"),
             "stop_first": resolutions.count("stop_first"),
@@ -739,11 +844,17 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
         "min_distinct_days": MIN_DISTINCT_DAYS,
         "min_peers": MIN_PEERS,
         # What `vs_peers` is measured against, in words, so no reader takes
-        # its zero for an index.
-        "peer_basis": ("the average move of the other names scored over the "
-                       "same days, in the same market"),
+        # its zero for an index. "The field" is what the page calls it
+        # (cloud #73); a call beats it by out-moving its middle name, and its
+        # move is measured from its average (see `attach_excess`).
+        "peer_basis": ("the field: the other names scored over the same days, "
+                       "in the same market"),
         # One flag the UI can branch on rather than re-deriving the rule.
-        "calibrated": any(b["sufficient"] for b in buckets),
+        # Directional buckets only (cloud #73): a Neutral bucket publishes a
+        # mean return and no hit rate, so its having enough samples says
+        # nothing about whether the calls can be checked.
+        "calibrated": any(b["sufficient"] for b in buckets
+                          if b["direction"] != "Neutral"),
         "horizons": list(HORIZONS),
         # Theses scored at each horizon, un-deduplicated. Lets the UI say
         # "not knowable yet" only when that is actually true.

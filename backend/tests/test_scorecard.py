@@ -544,9 +544,91 @@ check("...while the horizon line mixes both sides and so reports no mean excess"
       "mean_excess_pct" not in h5["vs_peers"]
       and "mean_excess_pct" in h5["by_direction"]["Bearish"]["vs_peers"])
 check("the response states the peer floor and what the peers are",
-      card["min_peers"] == sc.MIN_PEERS and "other names" in card["peer_basis"])
-check("vs peers leaves `calibrated` on the raw rule it has always used",
-      card["calibrated"] is any(b["sufficient"] for b in card["buckets"]))
+      card["min_peers"] == sc.MIN_PEERS and "other names" in card["peer_basis"]
+      and card["peer_basis"].startswith("the field"))
+check("`calibrated` reads the raw rule, over directional buckets only",
+      card["calibrated"] is any(b["sufficient"] for b in card["buckets"]
+                                if b["direction"] != "Neutral"))
+
+
+# --- the field's MIDDLE name, not its average (cloud #73) ----------------
+# Daily returns are right-skewed: one name up 20% drags the average above
+# almost everyone. Measured on prod, 46-48% of names beat their peers' mean at
+# 1 and 10 days, so a 50% line judged on the mean was tilted towards Bearish.
+skew = ([row(f"US.S{i}", "Neutral", 0.0, day="2026-10-06") for i in range(10)]
+        + [row("US.ROCKET", "Neutral", 20.0, day="2026-10-06")])
+modest = row("US.MODEST", "Bullish", 1.0, day="2026-10-06")
+sc.attach_excess(skew + [modest])
+check("a Bullish call above the middle name but below the average BEATS the field",
+      sc._beat_peers(modest) is True and modest["excess_pct"] < 0,
+      f"vs mean {modest['excess_pct']:+.3f}, vs median {modest['excess_vs_median_pct']:+.3f}")
+check_close("...and its move is still measured from the average",
+            modest["excess_pct"], 1.0 - 20.0 / 11)
+check_close("...while the beat is measured from the middle name, itself excluded",
+            modest["excess_vs_median_pct"], 1.0 - 0.0)
+sinker = row("US.SINK", "Bearish", -1.0, day="2026-10-06")
+sc.attach_excess(skew + [sinker])
+check("a Bearish call below the middle name beats the field too",
+      sc._beat_peers(sinker) is True)
+on_median = row("US.TIE", "Bullish", 0.0, day="2026-10-06")
+sc.attach_excess(skew + [on_median])
+check("a call exactly on the middle name is neither a beat nor a miss",
+      sc._beat_peers(on_median) is None)
+tied = sc._vs_peers(skew + [on_median], with_mean=True)
+check("...and drops out of the against-the-field figures rather than counting as a miss",
+      tied["hits"] is None and tied["samples"] == len(skew), str(tied))
+
+
+# --- a range on every rate, allowing for days moving together -------------
+spread = [(f"2026-12-{d:02d}", d % 2) for d in range(1, 21)]          # 20 days
+r_spread = sc._rate_range(spread)
+check("the range contains the rate it describes",
+      r_spread is not None and r_spread[0] < 0.5 < r_spread[1], str(r_spread))
+wider = sc._rate_range(spread[:10])
+check("...and is wider on fewer days",
+      (wider[1] - wider[0]) > (r_spread[1] - r_spread[0]), f"{wider} vs {r_spread}")
+# The same twenty outcomes, ten right on one day and ten wrong on another:
+# two market observations, not twenty, and the range has to say so.
+lumped = ([("2026-12-01", 1)] * 10) + ([("2026-12-02", 0)] * 10)
+r_lumped = sc._rate_range(lumped)
+check("calls packed into two days get a far wider range than the same calls spread out",
+      (r_lumped[1] - r_lumped[0]) > 1.5 * (r_spread[1] - r_spread[0]),
+      f"{r_lumped} vs {r_spread}")
+check("one day has no range at all, not a confident one",
+      sc._rate_range([("2026-12-01", 1)] * 30) is None)
+r_all = sc._rate_range([(f"2026-12-{d:02d}", 1) for d in range(1, 21)])
+check("an all-right record still has a range below 100%",
+      r_all is not None and r_all[1] == 1.0 and r_all[0] < 1.0, str(r_all))
+check("every range in the live response sits inside 0-1, around its own rate",
+      all(b["hit_rate_range"] is None or b["hit_rate"] is None
+          or b["hit_rate_range"][0] <= b["hit_rate"] <= b["hit_rate_range"][1]
+          for b in card["buckets"]),
+      "a range that excludes its own rate is a bug, not a wide interval")
+check("...and the against-the-field figures carry one too",
+      xbear["vs_peers"]["hit_rate_range"] is not None, str(xbear["vs_peers"]))
+
+
+# --- flat closes and Neutral buckets, on a database of their own ----------
+db.DB_PATH = Path(tempfile.mkdtemp(prefix="scorecard-flat-")) / "test.db"
+db.init_db()
+for d in range(sc.MIN_DISTINCT_DAYS):
+    when = f"2027-01-{d + 1:02d}T10:00:00+00:00"
+    seed(9000 + d * 3, "US.CALM", "Neutral", 4, when, None, 0.4, horizon=3)
+seed(9900, "US.FLAT", "Bullish", 5, "2027-01-05T10:00:00+00:00", 0, 0.0, horizon=3)
+seed(9901, "US.UPUP", "Bullish", 5, "2027-01-05T10:00:00+00:00", 1, 2.0, horizon=3)
+flat = sc.scorecard()
+flat_bucket = next(b for b in flat["buckets"] if b["direction"] == "Bullish")
+check_eq("a flat close is neither right nor wrong: the bucket's hit rate rests on the one move",
+         flat_bucket["hit_rate"], 1.0)
+h3 = next(x for x in flat["summary"] if x["horizon_days"] == 3)
+check_eq("...the summary counts one decided call, not two",
+         h3["by_direction"]["Bullish"]["samples"], 1)
+check_close("...while its 0.00% still counts toward the average move",
+            h3["by_direction"]["Bullish"]["mean_return_pct"], 1.0)
+calm = next(b for b in flat["buckets"] if b["direction"] == "Neutral")
+check("a Neutral bucket with enough samples is sufficient...", calm["sufficient"] is True)
+check("...but on its own does not make the record `calibrated`",
+      flat["calibrated"] is False, "it publishes no hit rate, so it says nothing about calls")
 
 
 report("thesis scorecard")
