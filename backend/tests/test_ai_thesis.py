@@ -35,6 +35,14 @@ from app.services.ai_thesis import (          # noqa: E402
 from tests.harness import check, check_eq, report  # noqa: E402
 
 
+def _accepts(payload):
+    try:
+        validate_thesis(payload)
+        return True
+    except ThesisValidationError:
+        return False
+
+
 def rejects(label, payload, expect_fragment=""):
     try:
         validate_thesis(payload)
@@ -52,6 +60,10 @@ GOOD = {
     "suggested_stop": 172.0,
     "suggested_target": 190.0,
     "key_levels_notes": "call wall 190",
+    "medium_term_direction": "Bullish",
+    "medium_term_entry": 178.0,
+    "medium_term_stop": 160.0,
+    "medium_term_target": 215.0,
 }
 
 
@@ -176,7 +188,7 @@ rejects("bool target rejected", {**GOOD, "suggested_target": True}, "number or n
 rejects("string entry rejected, not parsed",
         {**GOOD, "suggested_entry": "178.0"}, "number or null")
 rejects("bool entry rejected", {**GOOD, "suggested_entry": True}, "number or null")
-rejects("missing suggested_entry rejected — the schema is seven keys now",
+rejects("missing suggested_entry rejected — the schema is eleven keys now",
         {k: v for k, v in GOOD.items() if k != "suggested_entry"},
         "missing required keys")
 check("notes 20% over the 500 asked for are accepted",
@@ -229,6 +241,88 @@ rejects("entry above target rejected even with no stop",
 check("a null level skips its pairs rather than defaulting",
       validate_thesis({**GOOD, "suggested_entry": None,
                        "suggested_stop": None}).suggested_stop is None)
+
+# The four-week message is matched on by substring above and was introduced by
+# #14 and #70. Extracting the ordering into _check_order must not reword it.
+try:
+    validate_thesis({**GOOD, "suggested_stop": 195.0, "suggested_target": 190.0})
+    check("the four-week ordering message is unchanged", False, "accepted")
+except ThesisValidationError as exc:
+    check_eq("the four-week ordering message is unchanged", str(exc),
+             "Bullish thesis needs suggested_stop below suggested_target, "
+             "got stop=195.0 target=190.0")
+
+# --- the three-month call (cloud #87) ------------------------------------
+t3 = validate_thesis(GOOD)
+check("the three-month call is carried through",
+      (t3.medium_term_direction, t3.medium_term_entry, t3.medium_term_stop,
+       t3.medium_term_target) == ("Bullish", 178.0, 160.0, 215.0))
+check("its levels are floats", isinstance(t3.medium_term_target, float))
+for key in ("medium_term_direction", "medium_term_entry", "medium_term_stop",
+            "medium_term_target"):
+    rejects(f"missing {key} rejected",
+            {k: v for k, v in GOOD.items() if k != key}, "missing required keys")
+rejects("an extra key is still rejected with eleven required",
+        {**GOOD, "long_term_target": 300.0}, "unexpected keys")
+rejects("lowercase three-month direction rejected, not title-cased",
+        {**GOOD, "medium_term_direction": "bullish"}, "case-sensitive")
+rejects("a null three-month direction rejected — Neutral is the 'no edge' answer",
+        {**GOOD, "medium_term_direction": None}, "medium_term_direction")
+rejects("string three-month target rejected, not parsed",
+        {**GOOD, "medium_term_target": "215"}, "number or null")
+rejects("bool three-month stop rejected",
+        {**GOOD, "medium_term_stop": False}, "number or null")
+check("all three three-month levels may be null",
+      validate_thesis({**GOOD, "medium_term_entry": None, "medium_term_stop": None,
+                       "medium_term_target": None}).medium_term_target is None)
+check("a null three-month entry means 'at the current price', as for the four weeks",
+      validate_thesis({**GOOD, "medium_term_entry": None}).medium_term_entry is None)
+
+# Ordered for its OWN direction, pair by pair, exactly as the four weeks are.
+rejects("bullish three-month stop above its target rejected",
+        {**GOOD, "medium_term_stop": 220.0}, "medium_term_stop below medium_term_target")
+rejects("bullish three-month entry below its stop rejected",
+        {**GOOD, "medium_term_entry": 150.0}, "medium_term_stop below medium_term_entry")
+rejects("bullish three-month entry above its target rejected",
+        {**GOOD, "medium_term_entry": 230.0}, "medium_term_entry below medium_term_target")
+rejects("bearish three-month stop below its target rejected",
+        {**GOOD, "medium_term_direction": "Bearish"}, "Bearish medium-term call")
+check("bearish three-month call with its levels reversed accepted",
+      validate_thesis({**GOOD, "medium_term_direction": "Bearish",
+                       "medium_term_stop": 200.0, "medium_term_entry": 185.0,
+                       "medium_term_target": 150.0}).medium_term_direction == "Bearish")
+rejects("a three-month pair is held even when the third level is null",
+        {**GOOD, "medium_term_stop": None, "medium_term_entry": 230.0}, "below")
+check("a neutral three-month call ignores ordering",
+      validate_thesis({**GOOD, "medium_term_direction": "Neutral",
+                       "medium_term_stop": 300.0, "medium_term_target": 100.0})
+      .medium_term_direction == "Neutral")
+
+# The two calls may disagree; that is the point of having two.
+check("Bearish for the weeks beside Bullish for three months is accepted",
+      validate_thesis({**GOOD, "trade_direction": "Bearish",
+                       "suggested_stop": 190.0, "suggested_entry": 178.0,
+                       "suggested_target": 172.0}).medium_term_direction == "Bullish")
+check("...and the four-week levels are still held to the four-week direction",
+      not _accepts({**GOOD, "trade_direction": "Bearish"}))
+check("no check across the horizons: a three-month target short of the four-week one is legal",
+      validate_thesis({**GOOD, "medium_term_target": 185.0}).medium_term_target == 185.0)
+
+# The prompt has to say all of this, or the model is held to rules it was
+# never told.
+check("the prompt asks for eleven keys and names all four new ones",
+      "eleven keys" in SYSTEM_PROMPT
+      and all(f'"{k}"' in SYSTEM_PROMPT for k in (
+          "medium_term_direction", "medium_term_entry", "medium_term_stop",
+          "medium_term_target")))
+check("the prompt states both horizons",
+      "four weeks" in SYSTEM_PROMPT and "three months" in SYSTEM_PROMPT)
+check("the prompt says each set is ordered for its own direction",
+      "ordered for its own direction" in SYSTEM_PROMPT)
+check("the prompt says a disagreement between the two calls is explained in the reasoning",
+      "If the two directions differ" in SYSTEM_PROMPT)
+check("the prompt says conviction is about the four-week call",
+      'behind "trade_direction", the call for the next few weeks' in SYSTEM_PROMPT)
 
 # --- parsing the wrappers the live model actually emits ---------------
 check("bare JSON parses", extract_json(json.dumps(GOOD))["conviction_score"] == 7)
@@ -388,7 +482,7 @@ check("the system prompt gives conviction a scale, top to bottom",
       and "Use the whole scale" in SYSTEM_PROMPT)
 check("...and says missing inputs are not evidence against a call",
       "Missing inputs are not evidence against a call" in SYSTEM_PROMPT)
-check_eq("the prompt version is 2", PROMPT_VERSION, 2)
+check_eq("the prompt version is 3 (cloud #87)", PROMPT_VERSION, 3)
 check("missing chain is stated", "No options chain data" in live)
 
 report("ai_thesis")

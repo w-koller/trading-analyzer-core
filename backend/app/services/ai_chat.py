@@ -155,12 +155,41 @@ def _thesis_block(setup: dict[str, Any], age_hours: float | None, model: str | N
     return (
         f"STORED THESIS (produced{by} {when}):\n"
         f"  Direction: {setup['trade_direction']}   "
-        f"Conviction: {setup['conviction_score']}/10\n"
+        f"Conviction: {setup['conviction_score']}/10   (the next few weeks)\n"
         f"  Reasoning: {setup['reasoning']}\n"
-        f"  Suggested entry: {prompt_blocks._fmt(setup.get('suggested_entry'))}   "
+        f"  Suggested entry: {_entry(setup.get('suggested_entry'))}   "
         f"Suggested stop: {prompt_blocks._fmt(setup['suggested_stop'])}   "
         f"Suggested target: {prompt_blocks._fmt(setup['suggested_target'])}\n"
+        f"{_three_month_line(setup)}"
         f"  Key levels: {setup['key_levels_notes'] or 'none noted'}"
+    )
+
+
+def _entry(value: Any) -> str:
+    """An entry level in words. Null is an answer, "at the current price"
+    (decisions #70b), and `_fmt`'s "unavailable" would tell the model the
+    opposite: that the thesis named an entry nobody can see."""
+    return "at market" if value is None else prompt_blocks._fmt(value)
+
+
+def _three_month_line(setup: dict[str, Any]) -> str:
+    """The thesis's separate three-month call (cloud #87), or that it has none.
+
+    A thesis written before the call existed has a NULL direction. Saying so
+    in words matters: left out, the model would be asked about a three-month
+    view, find none, and be tempted to supply one of its own, which is the
+    answer-from-priors rule #1 exists to stop.
+    """
+    direction = setup.get("medium_term_direction")
+    if not direction:
+        return ("  Three-month call: none. This thesis was written before "
+                "three-month levels were asked for; do not supply one.\n")
+    fmt = prompt_blocks._fmt
+    return (
+        f"  Three-month call: {direction}   "
+        f"Entry: {_entry(setup.get('medium_term_entry'))}   "
+        f"Stop: {fmt(setup.get('medium_term_stop'))}   "
+        f"Target: {fmt(setup.get('medium_term_target'))}\n"
     )
 
 

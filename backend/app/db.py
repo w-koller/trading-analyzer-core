@@ -200,7 +200,15 @@ CREATE TABLE IF NOT EXISTS trade_setups (
     suggested_stop       REAL,
     suggested_target     REAL,
     key_levels_notes     TEXT,
-    similar_setup_ids    TEXT                  -- JSON array of setup ids injected into the prompt (audit trail)
+    similar_setup_ids    TEXT,                 -- JSON array of setup ids injected into the prompt (audit trail)
+    -- The three-month call (cloud #87): its own direction and levels, which may
+    -- disagree with the four-week trade above. No CHECK on the direction, unlike
+    -- trade_direction: migrate_schema adds plain columns only, and
+    -- validate_thesis owns the vocabulary. NULL on every row written before it.
+    medium_term_direction TEXT,
+    medium_term_entry     REAL,
+    medium_term_stop      REAL,
+    medium_term_target    REAL
 );
 
 CREATE TABLE IF NOT EXISTS trade_outcomes (
@@ -689,6 +697,13 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # intermediate build already has the table WITHOUT the column, and that
     # is exactly the case migrate_schema exists for.
     ("sector_plates", "members_synced_at", "TEXT"),
+    # The three-month call (cloud #87). A row written before it had no
+    # three-month view at all, which is what NULL says and what the portal
+    # reads it as: "this thesis predates it", never "the model declined".
+    ("trade_setups", "medium_term_direction", "TEXT"),
+    ("trade_setups", "medium_term_entry", "REAL"),
+    ("trade_setups", "medium_term_stop", "REAL"),
+    ("trade_setups", "medium_term_target", "REAL"),
 )
 
 
@@ -1017,8 +1032,17 @@ def insert_trade_setup(
     suggested_target: float | None,
     key_levels_notes: str | None,
     similar_setup_ids: list[int],
+    medium_term_direction: str | None = None,
+    medium_term_entry: float | None = None,
+    medium_term_stop: float | None = None,
+    medium_term_target: float | None = None,
 ) -> int:
-    """Persist one AI thesis result. Returns the new setup's id."""
+    """Persist one AI thesis result. Returns the new setup's id.
+
+    The four `medium_term_` arguments default to None so a caller written
+    before the three-month call existed (the test fixtures, mostly) still
+    stores a row, and stores it as one that predates the call.
+    """
     if not (1 <= conviction_score <= 10):
         raise ValueError("conviction_score must be between 1 and 10")
     with get_connection() as conn:
@@ -1028,8 +1052,10 @@ def insert_trade_setup(
                 scanner_run_id, code, market, data_as_of, is_delayed_data,
                 indicator_snapshot, feature_vector, trade_direction,
                 conviction_score, reasoning, suggested_entry, suggested_stop,
-                suggested_target, key_levels_notes, similar_setup_ids
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                suggested_target, key_levels_notes, similar_setup_ids,
+                medium_term_direction, medium_term_entry, medium_term_stop,
+                medium_term_target
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scanner_run_id, code, market, data_as_of, int(is_delayed_data),
@@ -1037,6 +1063,8 @@ def insert_trade_setup(
                 trade_direction, conviction_score, reasoning,
                 suggested_entry, suggested_stop, suggested_target, key_levels_notes,
                 json.dumps(similar_setup_ids),
+                medium_term_direction, medium_term_entry, medium_term_stop,
+                medium_term_target,
             ),
         )
         return int(cur.lastrowid)

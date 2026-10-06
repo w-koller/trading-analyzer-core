@@ -4,10 +4,11 @@ Three CLAUDE.md rules converge in this file:
 
 - **Rule #1 — the LLM interprets, it never calculates.** Every number in the
   prompt is precomputed by `indicators.py` / `options_walls.py`. The system
-  prompt says so explicitly, and the three level fields — `suggested_entry`,
-  `suggested_stop` and `suggested_target` — are the only numbers the model is
-  allowed to originate. They are judgements about where a setup turns, not
-  quantities derived from the inputs.
+  prompt says so explicitly, and the six level fields — `suggested_entry`,
+  `suggested_stop` and `suggested_target` for the next few weeks, and the
+  same three under `medium_term_` for about three months — are the only
+  numbers the model is allowed to originate. They are judgements about where
+  a setup turns, not quantities derived from the inputs.
 
 - **Rule #2 — strict JSON only, exact shape, reject/retry on malformed
   output, never silently coerce.** `validate_thesis()` is deliberately
@@ -83,13 +84,19 @@ def char_ceiling(target: int) -> int:
 # are not the same claim, and the Track record has to be able to tell them
 # apart. Bump this whenever a change to SYSTEM_PROMPT or `build_prompt` could
 # move what the model scores; rows written before the stamp existed are 1.
-PROMPT_VERSION = 2
+# Version 3 (cloud #87) added the three-month call and told the model, for the
+# first time, how long the existing levels are meant to hold. Neither touches
+# the conviction scale's wording, but both change what the model is asked to
+# weigh, so a version-3 score is not assumed to mean what a version-2 one did.
+PROMPT_VERSION = 3
 
 VALID_DIRECTIONS = ("Bullish", "Bearish", "Neutral")
 REQUIRED_KEYS = frozenset({
     "conviction_score", "trade_direction", "reasoning",
     "suggested_entry", "suggested_stop", "suggested_target",
     "key_levels_notes",
+    "medium_term_direction",
+    "medium_term_entry", "medium_term_stop", "medium_term_target",
 })
 
 SYSTEM_PROMPT = """You are a trading analyst producing advisory-only setup \
@@ -102,29 +109,48 @@ value is null it could not be computed; say so rather than estimating it.
 
 Respond with a single JSON object and nothing else. No prose, no markdown \
 fence, no explanation before or after. The object must have exactly these \
-seven keys:
+eleven keys:
 
-  "conviction_score":  integer 1-10
-  "trade_direction":   exactly one of "Bullish", "Bearish", "Neutral"
-  "reasoning":         a string of three sentences
-  "suggested_entry":   number or null
-  "suggested_stop":    number or null
-  "suggested_target":  number or null
-  "key_levels_notes":  a short string (under 500 characters) or null
+  "conviction_score":       integer 1-10
+  "trade_direction":        exactly one of "Bullish", "Bearish", "Neutral"
+  "reasoning":              a string of three sentences
+  "suggested_entry":        number or null
+  "suggested_stop":         number or null
+  "suggested_target":       number or null
+  "key_levels_notes":       a short string (under 500 characters) or null
+  "medium_term_direction":  exactly one of "Bullish", "Bearish", "Neutral"
+  "medium_term_entry":      number or null
+  "medium_term_stop":       number or null
+  "medium_term_target":     number or null
+
+"trade_direction" and the three "suggested_" levels are a trade over the next \
+few days to about four weeks.
+
+The four "medium_term_" keys are a separate call for holding about three \
+months (roughly 60 trading days). Read it mainly from the 50-day and 200-day \
+averages and where the price sits against them. Its direction may differ from \
+"trade_direction": a stock in a long uptrend that has run too far, too fast \
+can be Bearish for the next few weeks and Bullish over three months. If the \
+two directions differ, use one of the three reasoning sentences to say why. \
+Use "Neutral" when neither direction has the edge over three months.
 
 "suggested_entry" is the price at which the setup becomes worth acting on — \
 where a buyer would want to be filled. That is not always the current price: \
 a setup may be worth waiting for a pullback to, or worth taking only once a \
 level has broken. Use null when it is worth acting on at the current price.
 
-The three levels must be ordered. For a Bullish thesis the stop sits below \
-the entry and the entry below the target; for a Bearish thesis the stop sits \
-above the entry and the entry above the target. Use null for any level you \
-cannot justify from the data given, rather than inventing one to satisfy the \
-ordering.
+"medium_term_entry" means the same for the three-month call, and null there \
+also means "at the current price".
 
-"conviction_score" is how much of the evidence lines up behind your \
-direction. Use the whole scale:
+Each set of three levels must be ordered for its own direction. For a Bullish \
+call the stop sits below the entry and the entry below the target; for a \
+Bearish call the stop sits above the entry and the entry above the target. \
+"trade_direction" orders the "suggested_" levels and "medium_term_direction" \
+orders the "medium_term_" levels. Use null for any level you cannot justify \
+from the data given, rather than inventing one to satisfy the ordering.
+
+"conviction_score" is how much of the evidence lines up behind \
+"trade_direction", the call for the next few weeks. Use the whole scale:
   1-2   the evidence mostly points the other way; this is a weak read
   3-4   mixed: about as much argues against the call as for it
   5-6   most of it agrees, but something material argues against it
@@ -157,6 +183,10 @@ class AIThesis:
     suggested_stop: float | None
     suggested_target: float | None
     key_levels_notes: str | None
+    medium_term_direction: str
+    medium_term_entry: float | None
+    medium_term_stop: float | None
+    medium_term_target: float | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -294,6 +324,12 @@ def validate_thesis(payload: dict[str, Any]) -> AIThesis:
             f"trade_direction must be exactly one of {list(VALID_DIRECTIONS)} "
             f"(case-sensitive), got {direction!r}"
         )
+    medium_direction = payload["medium_term_direction"]
+    if medium_direction not in VALID_DIRECTIONS:
+        raise ThesisValidationError(
+            f"medium_term_direction must be exactly one of {list(VALID_DIRECTIONS)} "
+            f"(case-sensitive), got {medium_direction!r}"
+        )
 
     reasoning = payload["reasoning"]
     if not isinstance(reasoning, str) or not reasoning.strip():
@@ -309,6 +345,9 @@ def validate_thesis(payload: dict[str, Any]) -> AIThesis:
     entry = _number(payload["suggested_entry"], "suggested_entry")
     stop = _number(payload["suggested_stop"], "suggested_stop")
     target = _number(payload["suggested_target"], "suggested_target")
+    m_entry = _number(payload["medium_term_entry"], "medium_term_entry")
+    m_stop = _number(payload["medium_term_stop"], "medium_term_stop")
+    m_target = _number(payload["medium_term_target"], "medium_term_target")
 
     notes = payload["key_levels_notes"]
     if notes is not None:
@@ -324,45 +363,13 @@ def validate_thesis(payload: dict[str, Any]) -> AIThesis:
             )
         notes = notes.strip() or None
 
-    # Directional coherence. A Bullish thesis whose stop sits above its
-    # target is not a formatting slip — it is advice that would lose money
-    # if followed, which is the one thing this tool exists to produce. The
-    # entry is held to the same standard: an entry outside its own stop and
-    # target describes a trade that is already lost, or already won, at the
-    # moment it is opened.
-    #
-    # Each pair is checked independently rather than as one three-way
-    # comparison, so a thesis naming only two of the three levels is still
-    # held to the ordering of the pair it did name. Nulls are skipped, not
-    # defaulted — "I cannot justify a level" stays a legal answer.
-    #
-    # Neutral is exempt entirely. It makes no directional claim, so there is
-    # no ordering its levels could contradict.
-    if direction in ("Bullish", "Bearish"):
-        bullish = direction == "Bullish"
-        # Ordered (lower, higher) as a BULLISH thesis reads them; Bearish
-        # inverts the whole set, which is why one flag drives all three
-        # comparisons instead of each pair carrying its own direction.
-        # stop/target comes first so that a thesis violating several pairs
-        # reports the same fault it always has.
-        pairs = (
-            ("stop", stop, "target", target),
-            ("stop", stop, "entry", entry),
-            ("entry", entry, "target", target),
-        )
-        for lo_name, lo, hi_name, hi in pairs:
-            if lo is None or hi is None:
-                continue
-            if bullish and lo >= hi:
-                raise ThesisValidationError(
-                    f"Bullish thesis needs suggested_{lo_name} below "
-                    f"suggested_{hi_name}, got {lo_name}={lo} {hi_name}={hi}"
-                )
-            if not bullish and lo <= hi:
-                raise ThesisValidationError(
-                    f"Bearish thesis needs suggested_{lo_name} above "
-                    f"suggested_{hi_name}, got {lo_name}={lo} {hi_name}={hi}"
-                )
+    # Directional coherence, once per horizon, each against its own
+    # direction. There is deliberately no check ACROSS the two: a three-month
+    # target short of the four-week one is an unusual judgement, not an
+    # incoherent one, and #70a checks order, never distance.
+    _check_order(direction, entry, stop, target, "thesis", "suggested_")
+    _check_order(medium_direction, m_entry, m_stop, m_target,
+                 "medium-term call", "medium_term_")
 
     return AIThesis(
         conviction_score=score,
@@ -372,7 +379,61 @@ def validate_thesis(payload: dict[str, Any]) -> AIThesis:
         suggested_stop=stop,
         suggested_target=target,
         key_levels_notes=notes,
+        medium_term_direction=medium_direction,
+        medium_term_entry=m_entry,
+        medium_term_stop=m_stop,
+        medium_term_target=m_target,
     )
+
+
+def _check_order(direction: str, entry: float | None, stop: float | None,
+                 target: float | None, noun: str, prefix: str) -> None:
+    """Reject a set of levels that contradicts its own direction.
+
+    A Bullish thesis whose stop sits above its target is not a formatting
+    slip — it is advice that would lose money if followed, which is the one
+    thing this tool exists to produce. The entry is held to the same
+    standard: an entry outside its own stop and target describes a trade that
+    is already lost, or already won, at the moment it is opened.
+
+    Each pair is checked independently rather than as one three-way
+    comparison, so a set naming only two of the three levels is still held
+    to the ordering of the pair it did name. Nulls are skipped, not
+    defaulted — "I cannot justify a level" stays a legal answer.
+
+    Neutral is exempt entirely. It makes no directional claim, so there is
+    no ordering its levels could contradict.
+
+    `noun` and `prefix` only word the message. For the four-week levels they
+    are "thesis" and "suggested_", which reproduces the message #14 and #70
+    introduced byte for byte: `tests/test_ai_thesis.py` matches on it.
+    """
+    if direction not in ("Bullish", "Bearish"):
+        return
+    bullish = direction == "Bullish"
+    # Ordered (lower, higher) as a BULLISH call reads them; Bearish inverts
+    # the whole set, which is why one flag drives all three comparisons
+    # instead of each pair carrying its own direction. stop/target comes
+    # first so that a set violating several pairs reports the same fault it
+    # always has.
+    pairs = (
+        ("stop", stop, "target", target),
+        ("stop", stop, "entry", entry),
+        ("entry", entry, "target", target),
+    )
+    for lo_name, lo, hi_name, hi in pairs:
+        if lo is None or hi is None:
+            continue
+        if bullish and lo >= hi:
+            raise ThesisValidationError(
+                f"Bullish {noun} needs {prefix}{lo_name} below "
+                f"{prefix}{hi_name}, got {lo_name}={lo} {hi_name}={hi}"
+            )
+        if not bullish and lo <= hi:
+            raise ThesisValidationError(
+                f"Bearish {noun} needs {prefix}{lo_name} above "
+                f"{prefix}{hi_name}, got {lo_name}={lo} {hi_name}={hi}"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -511,7 +572,7 @@ def generate_thesis(
         validate=lambda raw: validate_thesis(extract_json(raw)),
         subject=code,
         label="thesis",
-        correction_hint="exactly the seven required keys",
+        correction_hint="exactly the eleven required keys",
         transport_error=ThesisError,
         exhausted_error=ThesisValidationError,
         retry_on=ThesisValidationError,
