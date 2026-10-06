@@ -844,10 +844,11 @@ def scorecard(horizon: int | None = None) -> dict[str, Any]:
         "min_distinct_days": MIN_DISTINCT_DAYS,
         "min_peers": MIN_PEERS,
         # What `vs_peers` is measured against, in words, so no reader takes
-        # its zero for an index. "The field" is what the page calls it
-        # (cloud #73); a call beats it by out-moving its middle name, and its
-        # move is measured from its average (see `attach_excess`).
-        "peer_basis": ("the field: the other names scored over the same days, "
+        # its zero for an index. The page calls it "other stocks" (cloud #84;
+        # "the field" before, cloud #73); a call beats them by out-moving
+        # their middle name, and its move is measured from their average (see
+        # `attach_excess`).
+        "peer_basis": ("the other stocks analysed over the same days, "
                        "in the same market"),
         # One flag the UI can branch on rather than re-deriving the rule.
         # Directional buckets only (cloud #73): a Neutral bucket publishes a

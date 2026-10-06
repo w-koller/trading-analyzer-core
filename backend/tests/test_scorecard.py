@@ -544,8 +544,9 @@ check("...while the horizon line mixes both sides and so reports no mean excess"
       "mean_excess_pct" not in h5["vs_peers"]
       and "mean_excess_pct" in h5["by_direction"]["Bearish"]["vs_peers"])
 check("the response states the peer floor and what the peers are",
-      card["min_peers"] == sc.MIN_PEERS and "other names" in card["peer_basis"]
-      and card["peer_basis"].startswith("the field"))
+      card["min_peers"] == sc.MIN_PEERS
+      and card["peer_basis"].startswith("the other stocks analysed")
+      and "same market" in card["peer_basis"])
 check("`calibrated` reads the raw rule, over directional buckets only",
       card["calibrated"] is any(b["sufficient"] for b in card["buckets"]
                                 if b["direction"] != "Neutral"))
