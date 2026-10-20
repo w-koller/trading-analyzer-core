@@ -41,6 +41,16 @@ TEMPERATURE = 0.2
 # cleaner output for free.
 RESPONSE_FORMAT = {"type": "json_object"}
 
+# What a reader is shown when this loop fails, in place of the exception.
+# Neither exception's own message is fit to show anyone: the transport error
+# names the model server's address, and the exhausted one carries the
+# validator's last complaint, which can quote the model's rejected answer
+# (`ai_thesis.extract_json` puts up to 200 characters of it in its message).
+# A route logs the cause and shows one of these (cloud #98).
+MODEL_UNREACHABLE = "The model could not be reached. Please try again in a moment."
+ANSWER_REJECTED = ("The model's answer did not pass our checks. "
+                   "Please try again in a moment.")
+
 
 def client(timeout: float):
     """An OpenAI-protocol client pointed at the local Ollama instance.

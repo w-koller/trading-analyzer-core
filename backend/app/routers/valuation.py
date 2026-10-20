@@ -8,6 +8,7 @@ every other interactive generation in this app shares.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from app.services import (llm_json, llm_slots, llm_stream, ollama_models,
                           valuation_narrative)
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/valuation", tags=["valuation"])
 
 # Wide enough for any real equity's inputs, narrow enough to keep a stray
@@ -109,6 +111,19 @@ class ValuationInterpretRequest(BaseModel):
         return inputs.model_dump()
 
 
+def _interpret_failure(exc: valuation_narrative.ValuationNarrativeError) -> str:
+    """What the reader is told when an explanation fails, blocking or
+    streamed. The cause goes to the log and never to the reader: a model
+    error names the model server's address, and a rejected answer's error
+    can quote the answer itself (cloud #98)."""
+    if isinstance(exc, valuation_narrative.ValuationNarrativeValidationError):
+        logger.warning("valuation explanation failed its checks: %s", exc)
+        return llm_json.ANSWER_REJECTED
+    # ValuationNarrativeModelError, the only other kind.
+    logger.warning("valuation explanation: %s", exc)
+    return llm_json.MODEL_UNREACHABLE
+
+
 @router.post("/{code}/interpret")
 async def interpret(code: str, payload: ValuationInterpretRequest) -> dict[str, Any]:
     """Explain an already-computed valuation in plain English.
@@ -139,7 +154,7 @@ async def interpret(code: str, payload: ValuationInterpretRequest) -> dict[str, 
             computed=payload.computed.model_dump(exclude_none=True),
         )
     except valuation_narrative.ValuationNarrativeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=_interpret_failure(exc)) from exc
     finally:
         llm_slots.release(token)
 
@@ -176,4 +191,5 @@ async def interpret_stream(code: str, payload: ValuationInterpretRequest,
         meta={"model": model, "model_kind": payload.model_kind},
         result_extra={"code": code, "model_kind": payload.model_kind, "model": model},
         errors=(valuation_narrative.ValuationNarrativeError,),
+        describe=_interpret_failure,
     )
