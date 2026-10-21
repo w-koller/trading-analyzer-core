@@ -2,7 +2,7 @@
 #
 # Restrict the Ollama API to the two app LXCs.
 #
-# RUNS ON THE OLLAMA LXC (192.168.68.49), not on the trading box. Nothing in
+# RUNS ON THE OLLAMA LXC (192.168.68.55), not on the trading box. Nothing in
 # this repo installs it — see deploy/README-ollama.md.
 #
 # The companion drop-in (deploy/systemd/ollama.service.d/override.conf) binds

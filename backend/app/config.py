@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     trd_acc_id: int | None = None
 
     # --- Ollama ---
-    ollama_base_url: str = "http://192.168.68.49:11434/v1"
+    ollama_base_url: str = "http://192.168.68.55:11434/v1"
     ollama_model: str = "deepseek-r1:32b"
 
     # --- Database ---
