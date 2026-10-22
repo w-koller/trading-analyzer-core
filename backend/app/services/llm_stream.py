@@ -67,6 +67,10 @@ FIRST_ACTIVITY_TIMEOUT = 300.0
 # A "writing" event per this many characters of JSON — enough to animate a
 # progress line, not one frame per token.
 WRITING_EVERY_CHARS = 48
+# What the reader is told about a failure nobody worded for them: a caller's
+# error that came with no `describe`, or a fault. Never the exception's own
+# message (cloud #98).
+CALL_FAILED = "The model call failed. Please try again."
 
 
 def sse_frame(event: str, payload: Any) -> str:
@@ -196,6 +200,7 @@ def sse_response(
     meta: dict[str, Any],
     result_extra: dict[str, Any] | None = None,
     errors: tuple[type[Exception], ...] = (),
+    describe: Callable[[Exception], str] | None = None,
 ) -> StreamingResponse:
     """Serve `stream_validated_json`'s events as SSE, owning the lifecycle.
 
@@ -209,8 +214,13 @@ def sse_response(
       * a client disconnect — closing the tab, pressing Stop — ends it, so
         Ollama is not left generating for nobody on one of two GPU slots.
 
-    `errors` are the caller's own failure types; they reach the client as an
-    `error` frame carrying the message. Anything else is a fault, logged.
+    `errors` are the caller's own failure types, and `describe` is the
+    caller's function that turns one of them into the sentence the reader
+    sees, logging the cause as it does. They reach the client as an `error`
+    frame carrying that sentence and never the exception's own message: an
+    `llm_json` transport error names the model server's address, and an
+    exhausted one can quote the model's rejected answer (cloud #98). Anything
+    else is a fault, logged, and the reader is told only that the call failed.
     """
 
     async def generate() -> AsyncIterator[str]:
@@ -281,11 +291,14 @@ def sse_response(
         except asyncio.CancelledError:
             raise
         except errors as exc:
-            yield sse_frame("error", {"detail": str(exc), "retryable": True})
+            if describe is None:
+                logger.warning("%s failed: %s", slot_label, exc)
+            yield sse_frame("error", {
+                "detail": describe(exc) if describe is not None else CALL_FAILED,
+                "retryable": True})
         except Exception as exc:                              # noqa: BLE001
-            logger.warning("%s failed: %s", slot_label, exc)
-            yield sse_frame("error", {"detail": f"The model call failed: {exc}",
-                                      "retryable": False})
+            logger.warning("%s failed: %s", slot_label, exc, exc_info=True)
+            yield sse_frame("error", {"detail": CALL_FAILED, "retryable": False})
         finally:
             # The chat's order: stop the drain, close the model stream (which
             # tells Ollama to stop), then give the slot back.

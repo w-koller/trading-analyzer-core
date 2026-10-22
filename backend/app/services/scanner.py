@@ -54,6 +54,11 @@ class TickerResult:
     setup_id: int | None = None
     error: str | None = None
     elapsed: float = 0.0
+    # What failed the scan, beside its message. The message is for the log;
+    # the type is how a caller tells a model failure apart when deciding what
+    # a reader is told, because that message names the model server's
+    # address (cloud #98). Not in `to_dict`: a type is not data.
+    error_type: type[Exception] | None = None
 
 
 @dataclass
@@ -257,7 +262,7 @@ def scan_ticker(
     except Exception as exc:
         logger.warning("%s: scan failed: %s", code, exc, exc_info=False)
         return TickerResult(code=code, ok=False, error=str(exc),
-                            elapsed=time.time() - started)
+                            error_type=type(exc), elapsed=time.time() - started)
 
 
 def _scan_order(tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:

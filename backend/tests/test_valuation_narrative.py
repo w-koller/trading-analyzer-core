@@ -287,4 +287,26 @@ except vn.ValuationNarrativeValidationError:
     check("an uncorrectable response raises rather than degrading", True,
           f"{len(stubborn.calls)} attempts")
 
+
+class DownClient:
+    """A model server that refuses the connection."""
+
+    class chat:                                                  # noqa: N801
+        class completions:                                       # noqa: N801
+            @staticmethod
+            def create(**kw):
+                raise ConnectionError("connection refused")
+
+
+try:
+    vn.generate_interpretation(
+        code="US.TEST", model_kind="dcf", inputs=INPUTS, computed=COMPUTED,
+        model="test-model", client=DownClient(),
+    )
+    check("a model that cannot be reached raises", False)
+except vn.ValuationNarrativeError as exc:
+    check("a model that cannot be reached is ValuationNarrativeModelError, its own "
+          "kind, because its message names the model server (cloud #98)",
+          type(exc) is vn.ValuationNarrativeModelError, type(exc).__name__)
+
 report("valuation narrative")

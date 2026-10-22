@@ -93,11 +93,17 @@ estimate a break-even yourself."""
 
 
 class ValuationNarrativeError(RuntimeError):
-    """The model could not be reached."""
+    """The explanation could not be written: one of the two below. Neither
+    message is shown to the reader (cloud #98)."""
 
 
 class ValuationNarrativeValidationError(ValuationNarrativeError):
     """The response was reached but rejected. Worth another attempt."""
+
+
+class ValuationNarrativeModelError(ValuationNarrativeError):
+    """The model could not be reached. Its message names the model server's
+    address, so it is logged and never shown."""
 
 
 # --- numeric fidelity: the whitelist mechanism this schema needs -----------
@@ -363,7 +369,7 @@ def prepare_interpretation(
             "exactly the two required keys, and every number you mention "
             "must be one you were given above"
         ),
-        "transport_error": ValuationNarrativeError,
+        "transport_error": ValuationNarrativeModelError,
         "exhausted_error": ValuationNarrativeValidationError,
         "max_retries": max_retries,
     }
