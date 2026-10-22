@@ -31,6 +31,10 @@ is a one-line change here and nothing else.
 
 Also gone: the old Reuters feed. `feeds.reuters.com` no longer resolves in
 DNS — worse than the "unparseable content" CLAUDE.md already recorded.
+
+And moved: `yahoo_top`. Its `finance.yahoo.com/news/rssindex` URL began
+answering 404 (found on 2026-10-22; cloud #104), and it now reads Yahoo's
+headline feed for the S&P 500 index, probed live that day.
 """
 
 from __future__ import annotations
@@ -76,8 +80,13 @@ FEEDS: tuple[FeedSpec, ...] = (
              "shocks", "bank"),
 
     # --- 2. Vibe and themes: narrative, momentum, sentiment ---------------
+    # Yahoo's market-wide headlines, through the headline endpoint the
+    # per-ticker feed below already uses, for the S&P 500 index. The old
+    # `finance.yahoo.com/news/rssindex` answers 404 (cloud #104), and so does
+    # every other finance.yahoo.com RSS path probed.
     FeedSpec("yahoo_top", "Yahoo Finance",
-             "https://finance.yahoo.com/news/rssindex", "themes", "markets"),
+             "https://feeds.finance.yahoo.com/rss/2.0/headline"
+             "?s=%5EGSPC&region=US&lang=en-US", "themes", "markets"),
     FeedSpec("investing_stocks", "Investing.com",
              "https://www.investing.com/rss/news_25.rss", "themes", "markets"),
     FeedSpec("investing_macro", "Investing.com Macro",
