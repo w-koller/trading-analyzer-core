@@ -16,13 +16,19 @@ What this suite pins, in the order it matters:
      Ollama's `delta.reasoning`, or inline <think> tags.
   4. The SSE wrapper gives the GPU slot back on success, on failure and when
      the client leaves — a leaked slot is half the box's capacity (#50).
+  5. An error frame never carries an exception's own message. The transport
+     error names the model server's address and the exhausted one can quote
+     the model's rejected answer, so the caller's `describe` words them, and
+     anything it did not word gets a fixed sentence (cloud #98).
 
 Offline throughout: fake async clients, no network, no model.
 """
 
 import asyncio
 import json
+import logging
 
+from app.config import settings
 from app.services import llm_json, llm_slots, llm_stream
 from tests.harness import check, check_eq, report
 
@@ -208,15 +214,27 @@ class FakeRequest:
         return self.leave_after is not None and self.polls > self.leave_after
 
 
-def serve(client, request):
+def describe(exc):
+    """A caller's describe: names which error it was given, never its text."""
+    return f"Worded by the caller ({type(exc).__name__})."
+
+
+def serve(client, request, **sse):
     events = llm_stream.stream_validated_json(client, **KW)
     resp = llm_stream.sse_response(events, request=request, slot_label="test",
                                    meta={"model": "m"}, result_extra={"code": "US.T"},
-                                   errors=(Transport, Exhausted))
+                                   **{"errors": (Transport, Exhausted),
+                                      "describe": describe, **sse})
 
     async def body():
         return [chunk async for chunk in resp.body_iterator]
     return asyncio.run(body())
+
+
+def error_payload(frames):
+    """The last frame's payload, which must be an error frame."""
+    assert frames[-1].startswith("event: error"), frames[-1]
+    return json.loads(frames[-1].split("data: ", 1)[1])
 
 
 frames = serve(FakeAsyncClient([delta(reasoning="hm"), delta(content='{"n": 3}')]),
@@ -231,7 +249,11 @@ check_eq("the slot is released after a completed stream", llm_slots.stats()["act
 frames = serve(FakeAsyncClient(*([delta(content='{"n": -1}')] for _ in range(3))),
                FakeRequest())
 check("an exhausted stream ends in an error frame, not a crash",
-      frames[-1].startswith("event: error") and "after 3 attempts" in frames[-1])
+      frames[-1].startswith("event: error"))
+check_eq("...in the caller's words, not the exception's, which carries the "
+         "model's last rejected answer (cloud #98)",
+         error_payload(frames),
+         {"detail": "Worded by the caller (Exhausted).", "retryable": True})
 check_eq("...and the slot is released", llm_slots.stats()["active"], 0)
 
 leaving = FakeAsyncClient([delta(reasoning=f"step {i} ") for i in range(20)]
@@ -242,5 +264,50 @@ check("a client that leaves ends the stream before any result",
 check("...the model stream is closed, so Ollama stops generating",
       leaving.streams and leaving.streams[0].closed)
 check_eq("...and the slot is released", llm_slots.stats()["active"], 0)
+
+
+# --- 5. an error frame never carries an exception's own message ------------
+class Captured(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.WARNING)
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+
+captured = Captured()
+logging.getLogger("app.services.llm_stream").addHandler(captured)
+
+
+def down():
+    """A client for a model server that refuses the connection."""
+    return FakeAsyncClient(RuntimeError("connection refused"))
+
+
+frames = serve(down(), FakeRequest())
+check_eq("a model that cannot be reached is worded by the caller as well",
+         error_payload(frames),
+         {"detail": "Worded by the caller (Transport).", "retryable": True})
+check("...so the model server's address, which the transport error names, "
+      "is in no frame", settings.ollama_base_url not in "".join(frames))
+
+captured.lines.clear()
+frames = serve(down(), FakeRequest(), describe=None)
+check_eq("a caller's error with no describe gets a fixed sentence, never its message",
+         error_payload(frames), {"detail": llm_stream.CALL_FAILED, "retryable": True})
+check("...and its message goes to the log instead",
+      any(settings.ollama_base_url in line for line in captured.lines))
+
+captured.lines.clear()
+frames = serve(down(), FakeRequest(), errors=())
+check_eq("an error the caller did not name is a fault: the same fixed sentence, "
+         "not retryable", error_payload(frames),
+         {"detail": llm_stream.CALL_FAILED, "retryable": False})
+check("...with its message in the log, not the frame",
+      any(settings.ollama_base_url in line for line in captured.lines)
+      and settings.ollama_base_url not in "".join(frames))
+check_eq("...and the slot is released after every one of them",
+         llm_slots.stats()["active"], 0)
 
 report("llm stream")

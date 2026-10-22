@@ -1,4 +1,4 @@
-# The Ollama LXC (192.168.68.49)
+# The Ollama LXC (192.168.68.55)
 
 This repo provisions the **trading-analyzer** LXC. It does *not* provision the
 Ollama LXC — that box was set up by hand and is the other half of the two-LXC
@@ -8,10 +8,10 @@ than remembered.
 
 **Nothing here is installed by `setup_app.sh` or `provision_lxc.sh`,** and
 neither should learn to: both run *inside* the trading LXC and have no reach
-into this one. These are reference copies, to be copied to `.49` by hand. Same
+into this one. These are reference copies, to be copied to `.55` by hand. Same
 precedent as `deploy/systemd/moomoo-opend.service`.
 
-| File | Installs to (on `.49`) |
+| File | Installs to (on `.55`) |
 |---|---|
 | `systemd/ollama.service.d/override.conf` | `/etc/systemd/system/ollama.service.d/override.conf` |
 | `nftables/ollama.nft` | loaded via `/etc/nftables.conf`, `systemctl enable nftables` |
@@ -34,18 +34,18 @@ each file; both explain their own reasoning at length.
 From the **trading** LXC, one command separates the two causes:
 
 ```bash
-curl -s -m 5 -o /dev/null -w '%{http_code} in %{time_total}s\n' http://192.168.68.49:11434/v1/models
+curl -s -m 5 -o /dev/null -w '%{http_code} in %{time_total}s\n' http://192.168.68.55:11434/v1/models
 ```
 
 - **Refused in ~0.0001s** (curl exits 7): the packet arrived and nothing was
   listening. The host is fine — this is almost always an Ollama update having
-  reverted the bind to `127.0.0.1`. Check `ss -tlnp | grep 11434` on `.49` and
+  reverted the bind to `127.0.0.1`. Check `ss -tlnp | grep 11434` on `.55` and
   confirm the drop-in above is still in place.
 - **Times out**: a network or firewall fault. Check the `ollama_fw` table, and
   whether `.107` still has the address the ruleset names.
 - **200**: Ollama is reachable and the fault is elsewhere. Check that the
   *active* model is actually served —
-  `curl -s http://192.168.68.49:11434/v1/models | grep -o '"id":"[^"]*"'` —
+  `curl -s http://192.168.68.55:11434/v1/models | grep -o '"id":"[^"]*"'` —
   since the backend's model is a persisted `app_state` override and may not be
   the `.env` default (decisions #38). A missing tag fails 90 seconds into a
   scan, once per ticker, not at boot.
