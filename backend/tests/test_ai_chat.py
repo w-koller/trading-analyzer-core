@@ -112,6 +112,25 @@ check("the context says there is no live price",
       "do NOT have a live price" in ctxblock)
 check("the stored thesis, its direction and conviction are all present",
       "Bullish" in ctxblock and "6/10" in ctxblock and "watch 172" in ctxblock)
+
+# The three-month call (cloud #87). A thesis written before it has none, and
+# the context says so in words rather than leaving a gap the model would fill.
+check("a thesis without a three-month call says it predates one",
+      "Three-month call: none" in ctxblock and "do not supply one" in ctxblock)
+_ctx3 = {**ctx, "setup": {**ctx["setup"], "suggested_entry": None,
+                          "medium_term_direction": "Bearish",
+                          "medium_term_entry": None, "medium_term_stop": 205.0,
+                          "medium_term_target": 150.0}}
+_block3 = build_messages(_ctx3, "and over three months?", [])[1]["content"]
+check("a thesis with a three-month call shows its direction and levels",
+      "Three-month call: Bearish" in _block3 and "Stop: 205.00" in _block3
+      and "Target: 150.00" in _block3)
+check("a null entry reads 'at market' at both horizons, never 'unavailable'",
+      "Suggested entry: at market" in _block3 and "Entry: at market" in _block3
+      and "unavailable" not in _block3.split("Key levels")[0].split("STORED THESIS")[1],
+      "null means 'at the current price' (decisions #70b)")
+check("the conviction is labelled as the four-week call's",
+      "6/10   (the next few weeks)" in ctxblock)
 check("not holding it is stated explicitly rather than omitted",
       "do not hold this ticker" in ctxblock)
 check("indicators are labelled as already calculated",

@@ -251,6 +251,10 @@ def scan_ticker(
             suggested_target=thesis.suggested_target,
             key_levels_notes=thesis.key_levels_notes,
             similar_setup_ids=[s["setup_id"] for s in similar],
+            medium_term_direction=thesis.medium_term_direction,
+            medium_term_entry=thesis.medium_term_entry,
+            medium_term_stop=thesis.medium_term_stop,
+            medium_term_target=thesis.medium_term_target,
         )
         elapsed = time.time() - started
         logger.info(

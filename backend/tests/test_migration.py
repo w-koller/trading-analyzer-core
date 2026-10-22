@@ -49,6 +49,24 @@ check("the security_type column definition is where the fixture expects it",
       "if _SCHEMA is reformatted this fixture must be updated with it")
 pre = pre.replace(_SECURITY_TYPE_DDL, "")
 
+# The three-month call (cloud #87) added four columns AFTER similar_setup_ids,
+# which until then closed the table with no trailing comma. So the fixture
+# cuts from that line to the last new column and puts the old closing line
+# back; deleting only the four lines would leave a comma before ")" and the
+# fixture would not parse at all.
+_MEDIUM_FROM = "    similar_setup_ids    TEXT,"
+_MEDIUM_TO = "    medium_term_target    REAL\n"
+_OLD_CLOSE = ("    similar_setup_ids    TEXT                  -- JSON array of setup "
+              "ids injected into the prompt (audit trail)\n")
+check("the three-month columns are where the fixture expects them",
+      _MEDIUM_FROM in pre and _MEDIUM_TO in pre,
+      "if _SCHEMA is reformatted this fixture must be updated with it")
+_a = pre.index(_MEDIUM_FROM)
+_b = pre.index(_MEDIUM_TO) + len(_MEDIUM_TO)
+pre = pre[:_a] + _OLD_CLOSE + pre[_b:]
+check("the fixture removed every three-month column",
+      "medium_term" not in pre)
+
 with db.get_connection() as conn:
     conn.executescript(pre)
 
@@ -56,6 +74,8 @@ check("pre-migration table lacks suggested_entry",
       "suggested_entry" not in columns("trade_setups"))
 check("pre-migration table is otherwise complete",
       {"suggested_stop", "suggested_target", "reasoning"} <= columns("trade_setups"))
+check("pre-migration table lacks the three-month call",
+      not any(c.startswith("medium_term") for c in columns("trade_setups")))
 check("pre-migration watchlist_cache lacks security_type",
       "security_type" not in columns("watchlist_cache"))
 check("pre-migration watchlist_cache is otherwise complete",
@@ -91,8 +111,13 @@ check("...and the same is true of security_type",
 
 # --- migrate -----------------------------------------------------------
 added = db.migrate_schema()
+_MEDIUM = ["medium_term_direction", "medium_term_entry", "medium_term_stop",
+           "medium_term_target"]
 check_eq("migrate_schema reports what it added", added,
-         ["trade_setups.suggested_entry", "watchlist_cache.security_type"])
+         ["trade_setups.suggested_entry", "watchlist_cache.security_type"]
+         + [f"trade_setups.{c}" for c in _MEDIUM])
+check("all four three-month columns now exist",
+      set(_MEDIUM) <= columns("trade_setups"))
 check("the column now exists", "suggested_entry" in columns("trade_setups"))
 check("security_type now exists", "security_type" in columns("watchlist_cache"))
 
@@ -103,6 +128,9 @@ check("its suggested_entry is NULL, not 0.0",
       row["suggested_entry"] is None,
       "a thesis written before the field existed had no entry — not an empty one")
 check_eq("its other columns are untouched", row["suggested_stop"], 172.0)
+check("its three-month call is NULL throughout: it predates the call",
+      all(row[c] is None for c in _MEDIUM),
+      "the portal reads a NULL direction as 'written before', never 'declined'")
 
 with db.get_connection() as conn:
     wl = conn.execute("SELECT * FROM watchlist_cache WHERE code = 'US.PLTR'").fetchone()
@@ -144,6 +172,23 @@ check("insert_trade_setup succeeds against the migrated table", setup_id > 0)
 
 stored = db.get_latest_setup_for_code("US.PLTR")
 check_eq("the entry round-trips as a float", stored["suggested_entry"], 178.0)
+check("a caller that names no three-month call stores it as NULL",
+      all(stored[c] is None for c in _MEDIUM))
+
+db.insert_trade_setup(
+    scanner_run_id=None, code="US.PLTR", market="US",
+    data_as_of="2026-08-27T00:00:00+00:00", is_delayed_data=False,
+    indicator_snapshot={"spot": 181.0}, feature_vector=[0.1] * 13,
+    trade_direction="Bearish", conviction_score=5,
+    reasoning="One. Two. Three.",
+    suggested_entry=182.0, suggested_stop=186.0, suggested_target=175.0,
+    key_levels_notes=None, similar_setup_ids=[],
+    medium_term_direction="Bullish", medium_term_entry=None,
+    medium_term_stop=165.0, medium_term_target=205.0,
+)
+stored = db.get_latest_setup_for_code("US.PLTR")
+check_eq("the three-month call round-trips",
+         [stored[c] for c in _MEDIUM], ["Bullish", None, 165.0, 205.0])
 
 with db.get_connection() as conn:
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]

@@ -76,11 +76,24 @@ if thesis.suggested_stop is not None and thesis.suggested_target is not None:
     check("stop/target ordered coherently with direction", ordered,
           f"stop={thesis.suggested_stop} target={thesis.suggested_target}")
 
+check("the three-month direction is one of the three allowed (cloud #87)",
+      thesis.medium_term_direction in ("Bullish", "Bearish", "Neutral"),
+      str(thesis.medium_term_direction))
+if thesis.medium_term_stop is not None and thesis.medium_term_target is not None:
+    m_ordered = (thesis.medium_term_stop < thesis.medium_term_target
+                 if thesis.medium_term_direction == "Bullish"
+                 else thesis.medium_term_stop > thesis.medium_term_target
+                 if thesis.medium_term_direction == "Bearish" else True)
+    check("the three-month stop/target are ordered for their own direction", m_ordered,
+          f"stop={thesis.medium_term_stop} target={thesis.medium_term_target}")
+
 print(f"\n  direction : {thesis.trade_direction}")
 print(f"  conviction: {thesis.conviction_score}")
 print(f"  reasoning : {thesis.reasoning}")
 print(f"  stop/target: {thesis.suggested_stop} / {thesis.suggested_target}")
-print(f"  notes     : {thesis.key_levels_notes}\n")
+print(f"  notes     : {thesis.key_levels_notes}")
+print(f"  3 months  : {thesis.medium_term_direction} "
+      f"{thesis.medium_term_entry} / {thesis.medium_term_stop} / {thesis.medium_term_target}\n")
 
 # Rule #7: a delayed-data prompt must produce a thesis that knows it.
 t0 = time.time()

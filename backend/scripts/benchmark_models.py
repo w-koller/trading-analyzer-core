@@ -129,6 +129,12 @@ def run_one(setup: dict[str, Any], model: str, timeout: float) -> dict[str, Any]
             "first_try": client.calls == 1,
             "direction": thesis.trade_direction,
             "conviction": thesis.conviction_score,
+            # The three-month call (cloud #87), so a run can say how often it
+            # disagrees with the four-week one and how often it names levels.
+            "medium": [thesis.medium_term_direction, thesis.medium_term_entry,
+                       thesis.medium_term_stop, thesis.medium_term_target],
+            "levels": [thesis.suggested_entry, thesis.suggested_stop,
+                       thesis.suggested_target],
             "error": None,
         }
     except Exception as exc:                             # noqa: BLE001
@@ -136,7 +142,7 @@ def run_one(setup: dict[str, Any], model: str, timeout: float) -> dict[str, Any]
             "code": code, "model": model, "ok": False,
             "seconds": round(time.monotonic() - started, 1),
             "attempts": client.calls, "first_try": False,
-            "direction": None, "conviction": None,
+            "direction": None, "conviction": None, "medium": None, "levels": None,
             "error": f"{type(exc).__name__}: {exc}"[:300],
         }
 
@@ -154,6 +160,10 @@ def summarise(model: str, runs: list[dict[str, Any]]) -> dict[str, Any]:
         "max_s": max(times) if times else None,
         "total_attempts": sum(r["attempts"] for r in runs),
         "convictions": [r["conviction"] for r in ok],
+        # How often the three-month call disagrees with the four-week one, and
+        # how often it names no target, out of the accepted theses.
+        "medium_differs": sum(1 for r in ok if r["medium"][0] != r["direction"]),
+        "medium_no_target": sum(1 for r in ok if r["medium"][3] is None),
     }
 
 
@@ -196,8 +206,10 @@ def main() -> int:
             all_runs.append(r)
             if r["ok"]:
                 flag = "" if r["first_try"] else f"  ({r['attempts']} attempts)"
+                m = r["medium"]
                 print(f"  {r['code']:<10} {r['seconds']:>6.1f}s  "
-                      f"{r['direction']:<8} {r['conviction']}/10{flag}")
+                      f"{r['direction']:<8} {r['conviction']}/10  "
+                      f"3m {m[0]} {m[1]}/{m[2]}/{m[3]}{flag}")
             else:
                 print(f"  {r['code']:<10} {r['seconds']:>6.1f}s  FAILED  {r['error']}")
         print()
@@ -217,6 +229,12 @@ def main() -> int:
         if c:
             print(f"  {s['model']:<20} {sorted(c)}  "
                   f"median {statistics.median(c)}")
+
+    print("\nThree-month call (cloud #87), out of the accepted theses:")
+    for s in rows:
+        print(f"  {s['model']:<20} differs from the four-week call "
+              f"{s['medium_differs']}/{s['accepted']}, names no target "
+              f"{s['medium_no_target']}/{s['accepted']}")
 
     if args.out:
         Path(args.out).write_text(json.dumps(
